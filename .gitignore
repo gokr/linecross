@@ -1,0 +1,9 @@
+*.exe
+*.obj
+*.o
+*.out
+*.txt
+example
+example2
+example_sql
+crossline
