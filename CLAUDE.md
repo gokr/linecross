@@ -19,6 +19,7 @@ nim c -r example.nim                    # Compile and run basic example
 nim c -r example2.nim                   # Enhanced example with colors
 nim c -r example_sql.nim                # SQL parser example
 nim c -r example_extended.nim           # Extended shortcuts demo
+nim c -r example_history_callbacks.nim  # Custom history callbacks demo
 ```
 
 ## Architecture
@@ -40,13 +41,12 @@ nim c -r example_extended.nim           # Extended shortcuts demo
 - Paging control for long output
 - Cross-platform cursor and screen control APIs
 
-### Plain ports of examples
+### Examples
 - `example.nim`: Basic readline with completion and history
 - `example2.nim`: Advanced features including colors and paging
 - `example_sql.nim`: Complete SQL shell demonstrating parser integration
-
-### Complete example
 - `example_extended.nim`: Demonstrates configurable extended shortcuts
+- `example_history_callbacks.nim`: Shows how to implement custom history callbacks
 
 ## Keyboard Shortcuts
 
