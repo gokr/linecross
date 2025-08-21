@@ -1,6 +1,8 @@
 # Linecross
 
-A configurable Nim port of the [Linecross library](https://github.com/jcwangxp/Linecross). Linecross is a small, self-contained, cross-platform readline replacement with modular extended shortcuts.
+A configurable Nim port of the [Crossline library](https://github.com/jcwangxp/Crossline). Linecross is a small, self-contained, cross-platform readline replacement with modular extended shortcuts.
+
+Alternatives to this library are readline, nimnoise etc.
 
 **NOTE: This package is coded via AI and I admit it may be buggy still!**
 
@@ -184,7 +186,6 @@ addCompletion(completions, "command", "help text", fgGreen, fgYellow)
 
 ### All Platforms (Windows, Linux, macOS, Unix)
 - Uses Nim's `terminal` module for cross-platform compatibility
-- Automatic platform detection and appropriate API usage
 - Full keyboard shortcut support across all platforms
 - Color support using Nim's built-in color management
 - Cursor positioning and screen control via terminal module
@@ -193,19 +194,19 @@ addCompletion(completions, "command", "help text", fgGreen, fgYellow)
 ## Building and Installation
 
 ### Prerequisites
-- Nim 1.6+
-- Optional: `nimclipboard` for system clipboard support
+- Nim 2.2.4+ (may work with older)
+- Optional: `libclip` for system clipboard support
 
 ### Installation
 
 ```bash
 # Install via nimble (if published)
-nimble install Linecross
+nimble install linecross
 
 # Or clone and build locally
 git clone <repository>
 cd linecross
-nimble install nimclipboard  # Optional for system clipboard
+nimble install
 ```
 
 ### Compilation
@@ -218,8 +219,6 @@ nim c -r example_extended.nim           # Extended features demo
 # With system clipboard support
 nim c -d:useSystemClipboard -r example_extended.nim
 
-# Check library syntax
-nim check linecross.nim
 ```
 
 ## Clipboard Integration
@@ -231,9 +230,6 @@ All cut/paste operations use an internal clipboard that works across all platfor
 For integration with system clipboard (copy from/paste to other applications):
 
 ```bash
-# Install optional dependency
-nimble install nimclipboard
-
 # Compile with system clipboard support  
 nim c -d:useSystemClipboard -r your_app.nim
 ```
@@ -243,48 +239,7 @@ nim c -d:useSystemClipboard -r your_app.nim
 - Graceful fallback to internal clipboard if system access fails
 - Works across Windows, Linux, and macOS
 
-## Comparison with Original C Version
-
-This Nim port provides both compatibility and enhancements:
-
-**Improvements:**
-- **Memory safety**: Automatic memory management, no buffer overflows
-- **Modular features**: Configurable shortcut sets (15-65+ shortcuts)
-- **Type safety**: Strong typing prevents runtime errors
-- **Modern syntax**: Clean, readable Nim code
-- **Optional clipboard**: System clipboard integration via compile flag
-- **Better error handling**: Nim's exception system
-- **Cross-platform**: Unified API via Nim's `terminal` module
-
-**Compatibility:**
-- **Core API**: Similar `readline()` function signatures
-- **Key mappings**: Proper Alt+key escape sequence parsing
-- **Feature parity**: FullFeatures mode approaches C implementation functionality
-
-## Examples
-
-**Available Examples:**
-- `example.nim` - Basic readline with completion and history
-- `example2.nim` - Advanced features including colors and paging  
-- `example_sql.nim` - SQL shell demonstrating parser integration
-- **`example_extended.nim`** - **New**: Interactive demo of all feature configurations
-
-**Key Demo Features:**
-- Choose between Basic/Essential/Standard/Full feature sets
-- Test word movement, text transformation, cut/paste operations
-- System vs internal clipboard demonstrations
-- Feature status reporting and help system
 
 ## License
 
-MIT License - Same as the original Linecross library.
-
-## Contributing
-
-This Nim port has evolved significantly from the original C implementation with:
-- Modular extended shortcut system
-- Configurable feature flags  
-- Optional system clipboard integration
-- Modern Nim memory management and type safety
-
-The implementation maintains compatibility with the core readline functionality while adding new capabilities for different use cases and complexity levels.
+MIT License - Same as the original Linecross library
