@@ -15,6 +15,10 @@
 
 import std/[os, strutils, sequtils, terminal, strformat]
 
+# Platform-specific imports
+when defined(posix):
+  import std/posix
+
 # Optional system clipboard integration
 when defined(useSystemClipboard):
   try:
@@ -33,15 +37,9 @@ const
   # Default word delimiters for move and cut operations
   DefaultDelimiter* = " !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
   
-  # Configuration constants
-  HistoryMaxLines* = 256
-  HistoryBufLen* = 4096
-  HistoryMatchPatternNum* = 16
-  
-  CompletionMaxLines* = 1024
-  CompletionWordLen* = 64
-  CompletionHelpLen* = 256
-  CompletionHintLen* = 128
+  # Default configuration values (Nim uses dynamic containers, so these are just defaults)
+  DefaultHistoryMaxLines* = 256
+  DefaultHistoryMatchPatternNum* = 16
 
 ## Key codes for special keys
 type
@@ -94,18 +92,47 @@ type
 
 ## History system types  
 type
-  HistoryEntry* = object
-    line*: string
-    
   History* = object
-    entries*: seq[HistoryEntry]
+    entries*: seq[string]
     current*: int
     maxLines*: int
 
   # History provider callbacks (optional)
-  HistoryLoadCallback* = proc(): seq[HistoryEntry] {.nimcall.}
-  HistorySaveCallback* = proc(entries: seq[HistoryEntry]): bool {.nimcall.}
-  HistoryLookupCallback* = proc(pattern: string, maxResults: int): seq[HistoryEntry] {.nimcall.}
+  HistoryLoadCallback* = proc(): seq[string] {.nimcall.}
+  HistorySaveCallback* = proc(entries: seq[string]): bool {.nimcall.}
+  HistoryLookupCallback* = proc(pattern: string, maxResults: int): seq[string] {.nimcall.}
+
+## Function key and UI callbacks for pluggable screen output
+type
+  # Function key callbacks - all return strings to display to user
+  HelpCallback* = proc(): string {.nimcall.}
+  HistoryDisplayCallback* = proc(entries: seq[string]): string {.nimcall.}
+  ClearHistoryCallback* = proc(): bool {.nimcall.}  # returns true if user confirms
+  DebugCallback* = proc(keyCode: int): string {.nimcall.}
+  
+  # Search and completion callbacks
+  HistorySearchCallback* = proc(pattern: string, reverse: bool): seq[string] {.nimcall.}
+  CompletionListCallback* = proc(buf: string): string {.nimcall.}
+  
+  # Individual F-key and feature control
+  FunctionKeyFeatures* = object
+    f1Help*: bool             # F1 shows help
+    f2History*: bool          # F2 shows history
+    f3ClearHistory*: bool     # F3 clears history with confirmation
+    f4HistorySearch*: bool    # F4 searches history with current input
+    debugMode*: bool          # Ctrl-^ shows debug info
+
+  # Enum for feature types (for type-safe feature enabling)
+  FeatureType* = enum
+    WordMovement
+    TextTransform
+    AdvancedCutPaste
+    MultilineNav
+    HistorySearch
+    HelpSystem
+    AdvancedEdit
+    KeyVariants
+    AdvancedControls
 
 ## Feature flags for extended shortcuts
 type
@@ -117,6 +144,9 @@ type
     historySearch*: bool     # Ctrl-R, F4 for interactive history search
     helpSystem*: bool        # F1 help, Ctrl-^ debug mode
     advancedEdit*: bool      # Ctrl-T transpose, Alt-\ whitespace cleanup
+    functionKeys*: FunctionKeyFeatures  # Individual F-key control
+    keyVariants*: bool       # ESC+, Ctrl+, Alt+ key sequence variants
+    advancedControls*: bool  # Insert, Alt-\, Alt-R, Alt-=, etc.
 
 ## Predefined feature sets
 const
@@ -131,7 +161,8 @@ const
     wordMovement: true, 
     textTransform: true,
     advancedCutPaste: true,
-    multilineNav: true
+    multilineNav: true,
+    functionKeys: FunctionKeyFeatures(f1Help: true)  # Enable F1 help
   )
   
   FullFeatures* = ExtendedFeatures(
@@ -141,7 +172,16 @@ const
     multilineNav: true,
     historySearch: true,
     helpSystem: true,
-    advancedEdit: true
+    advancedEdit: true,
+    keyVariants: true,
+    advancedControls: true,
+    functionKeys: FunctionKeyFeatures(  # Enable all function keys
+      f1Help: true,
+      f2History: true,
+      f3ClearHistory: true,
+      f4HistorySearch: true,
+      debugMode: true
+    )
   )
 
 ## Main crossline state
@@ -178,6 +218,14 @@ type
     completionCallback*: CompletionCallback
     completions*: Completions
 
+    # Function key and UI callbacks (optional - defaults provided if nil)
+    helpCallback*: HelpCallback
+    historyDisplayCallback*: HistoryDisplayCallback
+    clearHistoryCallback*: ClearHistoryCallback
+    debugCallback*: DebugCallback
+    historySearchCallback*: HistorySearchCallback
+    completionListCallback*: CompletionListCallback
+
     # Multi-line support
     multiLine*: bool
     lines*: seq[string]
@@ -206,6 +254,17 @@ const
   AltC* = ord('c') + ((ord(KeyEscape) + 1) shl 8)     # Alt-C: Capitalize word
   AltD* = ord('d') + ((ord(KeyEscape) + 1) shl 8)     # Alt-D: Cut word forward
   AltBackspace* = ord(KeyBackspace) + ((ord(KeyEscape) + 1) shl 8)  # Alt-Backspace: Cut word back
+  
+  # Additional Alt key constants for missing C implementation features
+  AltR* = ord('r') + ((ord(KeyEscape) + 1) shl 8)     # Alt-R: Revert line
+  AltBackslash* = ord('\\') + ((ord(KeyEscape) + 1) shl 8)  # Alt-\: Delete whitespace
+  AltEquals* = ord('=') + ((ord(KeyEscape) + 1) shl 8)    # Alt-=: List completions
+  AltQuestion* = ord('?') + ((ord(KeyEscape) + 1) shl 8)  # Alt-?: List completions
+  AltLess* = ord('<') + ((ord(KeyEscape) + 1) shl 8)      # Alt-<: Move to first history
+  AltGreater* = ord('>') + ((ord(KeyEscape) + 1) shl 8)   # Alt->: Move to last history
+
+# Special key constant for Ctrl-^
+const CtrlCaret* = 30  # Ctrl-^ (0x1E)
 
 ## Low-level terminal I/O functions
 proc enableRawMode*(): bool =
@@ -392,6 +451,20 @@ proc getKey*(): int =
       return (ch1 + 32) + ((ord(KeyEscape) + 1) shl 8)  # Alt+Letter -> Alt+letter
     elif ch1 == ord(KeyBackspace):
       return AltBackspace
+    elif ch1 == ord('\\'):
+      return AltBackslash
+    elif ch1 == ord('='):
+      return AltEquals
+    elif ch1 == ord('?'):
+      return AltQuestion
+    elif ch1 == ord('<'):
+      return AltLess
+    elif ch1 == ord('>'):
+      return AltGreater
+    elif ch1 == ord('r'):
+      return AltR
+    elif ch1 == ord('d'):
+      return AltD
     
     # Fall back to standard escape sequence parsing
     if ch1 == ord('['):
@@ -407,6 +480,25 @@ proc getKey*(): int =
         let ch3 = getChar()
         if ch3 == ord('~'):
           return ord(KeyHome)
+        elif ch3 == ord(';'):
+          # Enhanced parsing for Ctrl sequences like 1;5C (Ctrl-Right), 1;5D (Ctrl-Left) 
+          let ch4 = getChar()
+          if ch4 == ord('5'):  # Ctrl modifier
+            let ch5 = getChar()
+            case ch5:
+            of ord('C'): return altKey(ord(KeyRight))  # Ctrl-Right as Alt-Right variant
+            of ord('D'): return altKey(ord(KeyLeft))   # Ctrl-Left as Alt-Left variant
+            of ord('A'): return altKey(ord(KeyUp))     # Ctrl-Up
+            of ord('B'): return altKey(ord(KeyDown))   # Ctrl-Down
+            else: discard
+          elif ch4 == ord('3'):  # Alt modifier  
+            let ch5 = getChar()
+            case ch5:
+            of ord('C'): return altKey(ord(KeyRight))  # Alt-Right
+            of ord('D'): return altKey(ord(KeyLeft))   # Alt-Left
+            of ord('A'): return altKey(ord(KeyUp))     # Alt-Up
+            of ord('B'): return altKey(ord(KeyDown))   # Alt-Down
+            else: discard
       of ord('2'):
         let ch3 = getChar()
         if ch3 == ord('~'):
@@ -449,10 +541,10 @@ proc addToHistory*(line: string) =
     return
   
   # Remove duplicates
-  gState.history.entries = gState.history.entries.filterIt(it.line != line)
+  gState.history.entries = gState.history.entries.filterIt(it != line)
   
   # Add to end
-  gState.history.entries.add(HistoryEntry(line: line))
+  gState.history.entries.add(line)
   
   # Trim if too many entries
   if gState.history.entries.len > gState.history.maxLines:
@@ -469,7 +561,7 @@ proc saveHistory*(filename: string): bool =
     defer: file.close()
 
     for entry in gState.history.entries:
-      file.writeLine(entry.line)
+      file.writeLine(entry)
 
     return true
   except:
@@ -487,7 +579,7 @@ proc loadHistory*(filename: string): bool =
     gState.history.entries = @[]
     for line in file.lines:
       if line.len > 0:
-        gState.history.entries.add(HistoryEntry(line: line))
+        gState.history.entries.add(line)
 
     return true
   except:
@@ -497,18 +589,18 @@ proc clearHistory*() =
   ## Clear all history
   gState.history.entries = @[]
 
-proc lookupHistory*(pattern: string, maxResults: int = HistoryMatchPatternNum): seq[HistoryEntry] =
+proc lookupHistory*(pattern: string, maxResults: int = DefaultHistoryMatchPatternNum): seq[string] =
   ## Lookup history entries matching pattern. If a user callback is registered
   ## it will be used; otherwise we fall back to a simple in-memory filter.
   if gState.historyLookupCallback != nil:
     return gState.historyLookupCallback(pattern, maxResults)
 
-  var results: seq[HistoryEntry] = @[]
+  var results: seq[string] = @[]
   if pattern.len == 0:
     return gState.history.entries
 
   for entry in gState.history.entries:
-    if entry.line.contains(pattern):
+    if entry.contains(pattern):
       results.add(entry)
       if results.len >= maxResults:
         break
@@ -731,6 +823,179 @@ proc triggerCompletion*() =
     
     refreshLine()
 
+## Default callback implementations (used when user callbacks are nil)
+proc defaultHelpCallback(): string =
+  ## Default help text showing available shortcuts
+  var help = "Linecross Keyboard Shortcuts:\n\n"
+  
+  # Basic shortcuts (always available)
+  help.add "Basic Movement:\n"
+  help.add "  Left/Ctrl-B     - Move back a character\n"
+  help.add "  Right/Ctrl-F    - Move forward a character\n" 
+  help.add "  Home/Ctrl-A     - Move to start of line\n"
+  help.add "  End/Ctrl-E      - Move to end of line\n\n"
+  
+  help.add "Editing:\n"
+  help.add "  Backspace       - Delete character before cursor\n"
+  help.add "  Delete/Ctrl-D   - Delete character under cursor\n"
+  help.add "  Ctrl-K          - Cut to end of line\n"
+  help.add "  Ctrl-U          - Cut to beginning of line\n\n"
+  
+  help.add "History & Control:\n"
+  help.add "  Up/Ctrl-P       - Previous history\n"
+  help.add "  Down/Ctrl-N     - Next history\n"
+  help.add "  Tab             - Trigger completion\n"
+  help.add "  Ctrl-L          - Clear screen\n"
+  help.add "  Ctrl-C/Ctrl-G   - Exit\n"
+  help.add "  Enter           - Accept line\n\n"
+  
+  # Extended shortcuts (feature dependent)
+  if gState.features.wordMovement:
+    help.add "Word Movement:\n"
+    help.add "  Alt-B           - Move back one word\n"
+    help.add "  Alt-F           - Move forward one word\n\n"
+  
+  if gState.features.textTransform:
+    help.add "Text Transform:\n"
+    help.add "  Alt-U           - Uppercase word\n"
+    help.add "  Alt-L           - Lowercase word\n"
+    help.add "  Alt-C           - Capitalize word\n\n"
+  
+  if gState.features.advancedCutPaste:
+    help.add "Cut/Paste:\n"
+    help.add "  Ctrl-X          - Cut entire line\n"
+    help.add "  Ctrl-Y/Ctrl-V   - Paste from clipboard\n"
+    help.add "  Alt-D           - Cut word forward\n"
+    help.add "  Alt-Backspace   - Cut word backward\n\n"
+  
+  if gState.features.functionKeys.f2History:
+    help.add "  F2              - Show history\n"
+  if gState.features.functionKeys.f3ClearHistory:
+    help.add "  F3              - Clear history\n"
+  if gState.features.functionKeys.f4HistorySearch:
+    help.add "  F4              - Search history\n"
+  
+  help.add "\nPress any key to continue..."
+  return help
+
+## Interactive history search implementation
+proc performHistorySearch(reverse: bool) =
+  ## Interactive history search with real-time pattern matching
+  var searchPattern = ""
+  var searchResults: seq[string] = @[]
+  var currentIndex = 0
+  
+  # Save current state
+  let originalBuf = gState.buf
+  let originalPos = gState.pos
+  
+  while true:
+    # Update search results based on current pattern
+    if gState.historySearchCallback != nil:
+      searchResults = gState.historySearchCallback(searchPattern, reverse)
+    else:
+      searchResults = lookupHistory(searchPattern)
+    
+    # Display search interface
+    stdout.write("\r\x1b[K")  # Clear line
+    let direction = if reverse: "reverse" else: "forward"
+    stdout.write(&"({direction}-i-search)`{searchPattern}': ")
+    
+    if searchResults.len > 0 and currentIndex < searchResults.len:
+      stdout.write(searchResults[currentIndex])
+    else:
+      stdout.write("(no matches)")
+    
+    stdout.flushFile()
+    
+    let key = getKey()
+    
+    case key:
+    of ord(KeyEnter), ord(KeyEnter2):
+      # Accept current match
+      if searchResults.len > 0 and currentIndex < searchResults.len:
+        gState.buf = searchResults[currentIndex]
+        gState.pos = gState.buf.len
+      break
+      
+    of ctrlKey('G'), ord(KeyEscape):
+      # Cancel search - restore original
+      gState.buf = originalBuf
+      gState.pos = originalPos
+      break
+      
+    of ctrlKey('R'):
+      # Continue reverse search
+      if reverse and currentIndex < searchResults.len - 1:
+        inc currentIndex
+      elif not reverse:
+        # Switch to reverse search
+        currentIndex = 0
+        
+    of ctrlKey('S'):
+      # Continue forward search
+      if not reverse and currentIndex < searchResults.len - 1:
+        inc currentIndex
+      elif reverse:
+        # Switch to forward search
+        currentIndex = 0
+        
+    of ord(KeyBackspace), ord(KeyDel2):
+      # Remove character from search pattern
+      if searchPattern.len > 0:
+        searchPattern = searchPattern[0..^2]
+        currentIndex = 0
+        
+    else:
+      # Add character to search pattern
+      if key >= 32 and key <= 126:
+        searchPattern.add(char(key))
+        currentIndex = 0
+  
+  stdout.write("\n")
+
+proc defaultHistoryDisplayCallback(entries: seq[string]): string =
+  ## Default history display showing recent entries with numbers
+  var display = "Command History:\n"
+  if entries.len == 0:
+    display.add "  (empty)\n"
+  else:
+    let start = max(0, entries.len - 20)  # Show last 20 entries
+    for i in start..<entries.len:
+      display.add &"  {i + 1:3}: {entries[i]}\n"
+  display.add "\nPress any key to continue..."
+  return display
+
+proc defaultClearHistoryCallback(): bool =
+  ## Default history clear confirmation
+  stdout.write("Clear all history? [y/N]: ")
+  stdout.flushFile()
+  let key = getKey()
+  stdout.write("\n")
+  return key == ord('y') or key == ord('Y')
+
+proc defaultDebugCallback(keyCode: int): string =
+  ## Default debug display showing key code information
+  var debug = &"Key Debug Information:\n"
+  debug.add &"  Raw key code: {keyCode} (0x{keyCode:X})\n"
+  debug.add &"  Character: '{char(keyCode and 0xFF)}' (if printable)\n"
+  
+  if keyCode == ord(KeyEscape):
+    debug.add "  Special: Escape key\n"
+  elif keyCode >= ord(KeyF1) and keyCode <= ord(KeyF12):
+    debug.add &"  Special: Function key F{keyCode - ord(KeyF1) + 1}\n"
+  elif keyCode >= ord(KeyUp) and keyCode <= ord(KeyRight):
+    let arrows = ["Up", "Down", "Left", "Right"]
+    debug.add &"  Special: {arrows[keyCode - ord(KeyUp)]} arrow\n"
+  elif keyCode >= 1 and keyCode <= 26:
+    debug.add &"  Special: Ctrl+{char(keyCode + ord('A') - 1)}\n"
+  elif (keyCode shr 8) == (ord(KeyEscape) + 1):
+    let altChar = char(keyCode and 0xFF)
+    debug.add &"  Special: Alt+{altChar}\n"
+  
+  debug.add "\nPress any key to continue..."
+  return debug
+
 ## Main readline implementation
 proc readline*(prompt: string, initialText: string = ""): string =
   ## Main readline function
@@ -826,14 +1091,14 @@ proc readline*(prompt: string, initialText: string = ""): string =
     of ord(KeyUp), ctrlKey('P'):
       if gState.historyPos > 0:
         dec gState.historyPos
-        gState.buf = gState.history.entries[gState.historyPos].line
+        gState.buf = gState.history.entries[gState.historyPos]
         gState.pos = gState.buf.len
         refreshLine()
     
     of ord(KeyDown), ctrlKey('N'):
       if gState.historyPos < gState.history.entries.len - 1:
         inc gState.historyPos
-        gState.buf = gState.history.entries[gState.historyPos].line
+        gState.buf = gState.history.entries[gState.historyPos]
         gState.pos = gState.buf.len
         refreshLine()
       elif gState.historyPos == gState.history.entries.len - 1:
@@ -918,6 +1183,27 @@ proc readline*(prompt: string, initialText: string = ""): string =
         gState.pos = startPos
         refreshLine()
     
+    # Key variants - Alternative movement keys (when keyVariants enabled)
+    of altKey(ord(KeyLeft)):  # Ctrl-Left, Alt-Left variants -> word movement
+      if gState.features.keyVariants and gState.features.wordMovement:
+        gState.pos = moveToWordStart(gState.pos)
+        refreshLine()
+    
+    of altKey(ord(KeyRight)):  # Ctrl-Right, Alt-Right variants -> word movement  
+      if gState.features.keyVariants and gState.features.wordMovement:
+        gState.pos = moveToWordEnd(gState.pos)
+        refreshLine()
+    
+    of altKey(ord(KeyUp)):  # Ctrl-Up, Alt-Up variants -> multi-line up
+      if gState.features.keyVariants and gState.features.multilineNav:
+        # Multi-line navigation up (if implemented)
+        discard  # Placeholder for multi-line implementation
+    
+    of altKey(ord(KeyDown)):  # Ctrl-Down, Alt-Down variants -> multi-line down
+      if gState.features.keyVariants and gState.features.multilineNav:
+        # Multi-line navigation down (if implemented) 
+        discard  # Placeholder for multi-line implementation
+    
     # Extended shortcuts - Advanced Editing
     of ctrlKey('T'):  # Ctrl-T: Transpose characters
       if gState.features.advancedEdit:
@@ -928,6 +1214,158 @@ proc readline*(prompt: string, initialText: string = ""): string =
           if gState.pos < gState.buf.len - 1:
             inc gState.pos
           refreshLine()
+    
+    # Interactive history search
+    of ctrlKey('R'):  # Ctrl-R: Reverse history search
+      if gState.features.historySearch:
+        performHistorySearch(reverse = true)
+        refreshLine()
+    
+    of ctrlKey('S'):  # Ctrl-S: Forward history search  
+      if gState.features.historySearch:
+        performHistorySearch(reverse = false)
+        refreshLine()
+    
+    # Advanced history navigation
+    of AltLess, ord(KeyPageUp):  # Alt-< or PgUp: Move to first history entry
+      if gState.features.advancedControls or gState.features.historySearch:
+        if gState.history.entries.len > 0:
+          gState.historyPos = 0
+          gState.buf = gState.history.entries[0]
+          gState.pos = gState.buf.len
+          refreshLine()
+    
+    of AltGreater, ord(KeyPageDown):  # Alt-> or PgDn: Move to last history entry
+      if gState.features.advancedControls or gState.features.historySearch:
+        gState.historyPos = gState.history.entries.len
+        gState.buf = ""
+        gState.pos = 0
+        refreshLine()
+    
+    # Advanced completion and editing
+    of AltEquals, AltQuestion:  # Alt-= or Alt-?: List all completions
+      if gState.features.advancedControls:
+        stdout.write("\n")
+        let listText = if gState.completionListCallback != nil:
+                         gState.completionListCallback(gState.buf)
+                       else:
+                         "Completion listing not configured"
+        stdout.write(listText)
+        stdout.write("\nPress any key to continue...")
+        discard getKey()
+        stdout.write("\n")
+        refreshLine()
+    
+    of AltR:  # Alt-R: Revert line (undo all changes)
+      if gState.features.advancedControls:
+        gState.buf = ""
+        gState.pos = 0
+        refreshLine()
+    
+    of AltBackslash:  # Alt-\: Delete whitespace around cursor
+      if gState.features.advancedEdit:
+        # Find whitespace boundaries around cursor
+        var start = gState.pos
+        var endPos = gState.pos
+        
+        # Move backwards to find non-whitespace
+        while start > 0 and gState.buf[start - 1] in " \t":
+          dec start
+        
+        # Move forwards to find non-whitespace
+        while endPos < gState.buf.len and gState.buf[endPos] in " \t":
+          inc endPos
+        
+        if start < endPos:
+          cutText(start, endPos)
+          gState.pos = start
+          refreshLine()
+    
+    of ord(KeyInsert):  # Insert: Paste from clipboard
+      if gState.features.advancedCutPaste:
+        gState.pos = pasteText(gState.pos)
+        refreshLine()
+    
+    # Note: Ctrl-J (10) conflicts with KeyEnter2, Ctrl-M (13) conflicts with KeyEnter
+    # Alternative Enter functionality is already handled by the main Enter case
+    
+    # Platform-specific controls
+    of ctrlKey('Z'):  # Ctrl-Z: Suspend job (Linux/Unix only)
+      when not defined(windows):
+        if gState.features.advancedControls:
+          stdout.write("\n")
+          disableRawMode()
+          # Send SIGTSTP to suspend the process
+          when defined(posix):
+            discard kill(getpid(), SIGTSTP)
+          # Process will be suspended here until resumed with 'fg'
+          discard enableRawMode()  # Re-enable when resumed
+          refreshLine()
+    
+    # Function keys with individual enable/disable control
+    of ord(KeyF1):
+      if gState.features.functionKeys.f1Help:
+        stdout.write("\n")
+        let helpText = if gState.helpCallback != nil:
+                         gState.helpCallback()
+                       else:
+                         defaultHelpCallback()
+        stdout.write(helpText)
+        discard getKey()  # Wait for user to press any key
+        stdout.write("\n")
+        refreshLine()
+    
+    of ord(KeyF2):
+      if gState.features.functionKeys.f2History:
+        stdout.write("\n")
+        let historyText = if gState.historyDisplayCallback != nil:
+                            gState.historyDisplayCallback(gState.history.entries)
+                          else:
+                            defaultHistoryDisplayCallback(gState.history.entries)
+        stdout.write(historyText)
+        discard getKey()  # Wait for user to press any key
+        stdout.write("\n")
+        refreshLine()
+    
+    of ord(KeyF3):
+      if gState.features.functionKeys.f3ClearHistory:
+        let shouldClear = if gState.clearHistoryCallback != nil:
+                           gState.clearHistoryCallback()
+                         else:
+                           defaultClearHistoryCallback()
+        if shouldClear:
+          clearHistory()
+          stdout.write("History cleared.\n")
+        refreshLine()
+    
+    of ord(KeyF4):
+      if gState.features.functionKeys.f4HistorySearch:
+        # Search history with current input as pattern
+        let matches = lookupHistory(gState.buf)
+        if matches.len > 0:
+          stdout.write("\n")
+          stdout.write("History matches:\n")
+          for i, match in matches:
+            stdout.write(&"  {i + 1}: {match}\n")
+          stdout.write("Press any key to continue...")
+          discard getKey()
+          stdout.write("\n")
+        else:
+          stdout.write("\nNo matches found.\n")
+        refreshLine()
+    
+    # Debug mode (Ctrl-^)
+    of CtrlCaret:
+      if gState.features.functionKeys.debugMode:
+        stdout.write("\n")
+        let debugText = if gState.debugCallback != nil:
+                          gState.debugCallback(CtrlCaret)
+                        else:
+                          defaultDebugCallback(CtrlCaret)
+        stdout.write(debugText)
+        discard getKey()  # Wait for user to press any key
+        stdout.write("\n")
+        refreshLine()
     
     # Regular character input
     else:
@@ -945,26 +1383,90 @@ proc setExtendedFeatures*(features: ExtendedFeatures) =
   ## Configure which extended shortcut features are enabled
   gState.features = features
 
-proc enableFeature*(feature: string, enable: bool = true) =
-  ## Enable or disable a specific feature by name
-  case feature.toLowerAscii:
-  of "wordmovement", "word": gState.features.wordMovement = enable
-  of "texttransform", "text": gState.features.textTransform = enable
-  of "advancedcutpaste", "cutpaste": gState.features.advancedCutPaste = enable
-  of "multiline", "multilineNav": gState.features.multilineNav = enable
-  of "historysearch", "history": gState.features.historySearch = enable
-  of "helpsystem", "help": gState.features.helpSystem = enable
-  of "advancededit", "edit": gState.features.advancedEdit = enable
-  else:
-    echo "Warning: Unknown feature: " & feature
+proc enableFeature*(feature: FeatureType, enable: bool = true) =
+  ## Enable or disable a specific feature using type-safe enum
+  case feature:
+  of WordMovement: gState.features.wordMovement = enable
+  of TextTransform: gState.features.textTransform = enable
+  of AdvancedCutPaste: gState.features.advancedCutPaste = enable
+  of MultilineNav: gState.features.multilineNav = enable
+  of HistorySearch: gState.features.historySearch = enable
+  of HelpSystem: gState.features.helpSystem = enable
+  of AdvancedEdit: gState.features.advancedEdit = enable
+  of KeyVariants: gState.features.keyVariants = enable
+  of AdvancedControls: gState.features.advancedControls = enable
 
 proc getExtendedFeatures*(): ExtendedFeatures =
   ## Get current extended feature configuration
   return gState.features
 
+## Function key configuration functions
+proc enableFunctionKey*(key: KeyCode, enable: bool = true) =
+  ## Enable/disable individual function keys using KeyCode enum
+  case key:
+  of KeyF1: gState.features.functionKeys.f1Help = enable
+  of KeyF2: gState.features.functionKeys.f2History = enable
+  of KeyF3: gState.features.functionKeys.f3ClearHistory = enable
+  of KeyF4: gState.features.functionKeys.f4HistorySearch = enable
+  else: 
+    echo "Warning: Only F1-F4 function keys are supported"
+
+proc enableDebugMode*(enable: bool = true) =
+  ## Enable/disable debug mode (Ctrl-^) separately since it's not a KeyCode
+  gState.features.functionKeys.debugMode = enable
+
+proc setFunctionKeyFeatures*(features: FunctionKeyFeatures) =
+  ## Set all function key features at once
+  gState.features.functionKeys = features
+
+proc getFunctionKeyFeatures*(): FunctionKeyFeatures =
+  ## Get current function key configuration
+  return gState.features.functionKeys
+
 proc registerCompletionCallback*(callback: CompletionCallback) =
   ## Register completion callback
   gState.completionCallback = callback
+
+proc registerHistorySaveCallback*(callback: HistorySaveCallback) =
+  ## Register custom history save callback
+  gState.historySaveCallback = callback
+
+proc registerHistoryLookupCallback*(callback: HistoryLookupCallback) =
+  ## Register custom history lookup callback
+  gState.historyLookupCallback = callback
+
+## Function key and UI callback registration
+proc registerHelpCallback*(callback: HelpCallback) =
+  ## Register custom help display callback for F1
+  gState.helpCallback = callback
+
+proc registerHistoryDisplayCallback*(callback: HistoryDisplayCallback) =
+  ## Register custom history display callback for F2
+  gState.historyDisplayCallback = callback
+
+proc registerClearHistoryCallback*(callback: ClearHistoryCallback) =
+  ## Register custom history clear confirmation callback for F3
+  gState.clearHistoryCallback = callback
+
+proc registerDebugCallback*(callback: DebugCallback) =
+  ## Register custom debug mode callback for Ctrl-^
+  gState.debugCallback = callback
+
+proc registerHistorySearchCallback*(callback: HistorySearchCallback) =
+  ## Register custom history search callback for Ctrl-R/S
+  gState.historySearchCallback = callback
+
+proc registerCompletionListCallback*(callback: CompletionListCallback) =
+  ## Register custom completion list display callback for Alt-=/? 
+  gState.completionListCallback = callback
+
+proc setHistoryEntries*(entries: seq[string]) =
+  ## Set history entries directly (useful with custom loaders)
+  gState.history.entries = entries
+
+proc getHistoryEntries*(): seq[string] =
+  ## Get current history entries (useful with custom savers)
+  return gState.history.entries
 
 proc addCompletion*(completions: var Completions, word: string, help: string = "",
                    wordColor: ForegroundColor = fgDefault, helpColor: ForegroundColor = fgDefault,
@@ -1015,7 +1517,7 @@ proc initCrossline*(features: ExtendedFeatures = BasicFeatures) =
   gState = CrosslineState()
   gState.isWindows = defined(windows)
   gState.delimiter = DefaultDelimiter
-  gState.history = History(maxLines: HistoryMaxLines)
+  gState.history = History(maxLines: DefaultHistoryMaxLines)
   gState.promptColor = fgDefault
   gState.promptStyle = {}
   gState.pagingEnabled = false
