@@ -1,4 +1,4 @@
-## Simple example demonstrating Crossline usage
+## Simple example demonstrating Linecross usage
 ## Port of the original example.c
 
 import linecross, strformat, strutils
@@ -15,7 +15,8 @@ proc completionHook(buf: string, completions: var Completions) =
       addCompletion(completions, cmd)
 
 proc main() =
-  echo "Crossline for Nim - Example"
+  initLinecross()
+  echo "Linecross for Nim - Example"
   echo "Type 'exit' to quit"
   echo ""
   
@@ -28,7 +29,7 @@ proc main() =
   # Main loop
   while true:
     try:
-      let line = readline("Crossline> ")
+      let line = readline("Linecross> ")
       
       if line == "":
         echo "Goodbye!"

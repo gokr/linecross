@@ -1,4 +1,4 @@
-## Extended Features Example for Crossline
+## Extended Features Example for Linecross
 ## 
 ## This example demonstrates the new configurable extended shortcut features
 ## including word movement, text transformation, and advanced cut/paste operations
@@ -34,7 +34,7 @@ proc showFeatureStatus() =
     echo "- System Clipboard Integration: DISABLED (compile with -d:useSystemClipboard to enable)"
 
 proc main() =
-  echo "Crossline Extended Features Demo"
+  echo "Linecross Extended Features Demo"
   echo "================================"
   echo ""
   echo "Available configurations:"
@@ -49,19 +49,19 @@ proc main() =
   
   case choice:
   of "1", "basic":
-    initCrossline(BasicFeatures)
+    initLinecross(BasicFeatures)
     echo "Using BasicFeatures (15 shortcuts)"
   of "2", "essential":
-    initCrossline(EssentialFeatures)
+    initLinecross(EssentialFeatures)
     echo "Using EssentialFeatures (25 shortcuts)"
   of "3", "standard", "":
-    initCrossline(StandardFeatures)  
+    initLinecross(StandardFeatures)  
     echo "Using StandardFeatures (40 shortcuts)"
   of "4", "full":
-    initCrossline(FullFeatures)
+    initLinecross(FullFeatures)
     echo "Using FullFeatures (65+ shortcuts)"
   else:
-    initCrossline(StandardFeatures)
+    initLinecross(StandardFeatures)
     echo "Invalid choice, using StandardFeatures"
   
   # Register completion

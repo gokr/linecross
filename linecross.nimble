@@ -9,9 +9,8 @@ srcDir        = "."
 # Dependencies
 
 requires "nim >= 2.2.4"
+requires "libclip" # For system clipboard integration (compile with -d:useSystemClipboard)
 
-# Optional dependencies - install separately if needed:
-# nimble install nimclipboard  # For system clipboard integration (compile with -d:useSystemClipboard)
 
 # Tasks
 

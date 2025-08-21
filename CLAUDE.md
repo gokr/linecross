@@ -191,16 +191,7 @@ type
 
 ```nim
 # Initialize with specific feature set
-initCrossline(StandardFeatures)
-
-# Or configure individually
-initCrossline()
-enableFeature("wordMovement")
-enableFeature("textTransform")
-setExtendedFeatures(ExtendedFeatures(
-  wordMovement: true,
-  advancedCutPaste: true
-))
+initLinecross(StandardFeatures)
 ```
 
 ### Extended Shortcut Mappings (Nim)

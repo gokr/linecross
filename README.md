@@ -1,16 +1,18 @@
 # Linecross
 
-A configurable Nim port of the [Crossline library](https://github.com/jcwangxp/Crossline). Linecross is a small, self-contained, cross-platform readline replacement with modular extended shortcuts.
+A configurable Nim port of the [Linecross library](https://github.com/jcwangxp/Linecross). Linecross is a small, self-contained, cross-platform readline replacement with modular extended shortcuts.
+
+**NOTE: This package is coded via AI and I admit it may be buggy still!**
 
 ## Features
 
 - **Cross-platform support**: Windows, Linux/Unix, macOS
 - **Configurable shortcuts**: 15-65+ shortcuts via feature flags (Basic/Essential/Standard/Full)
-- **History management**: Save/load history with search capabilities
+- **History management**: Pluggable save/load history with search capabilities
 - **Autocomplete support**: Customizable completion callbacks
-- **Color text support**: Full color API for prompts and completions
+- **Color text support**: Colors for prompts and completions
 - **Cursor and screen control**: Paging and cursor positioning APIs
-- **Optional system clipboard**: Via nimclipboard (compile-time flag)
+- **Optional system clipboard**: Via libclip (compile-time flag)
 
 ## Quick Start
 
@@ -20,6 +22,7 @@ A configurable Nim port of the [Crossline library](https://github.com/jcwangxp/C
 import linecross
 
 # Simple readline
+initLinecross()
 let line = readline("Prompt> ")
 echo "You entered: ", line
 ```
@@ -197,7 +200,7 @@ addCompletion(completions, "command", "help text", fgGreen, fgYellow)
 
 ```bash
 # Install via nimble (if published)
-nimble install crossline
+nimble install Linecross
 
 # Or clone and build locally
 git clone <repository>
@@ -274,7 +277,7 @@ This Nim port provides both compatibility and enhancements:
 
 ## License
 
-MIT License - Same as the original Crossline library.
+MIT License - Same as the original Linecross library.
 
 ## Contributing
 

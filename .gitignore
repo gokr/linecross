@@ -2,8 +2,11 @@
 *.obj
 *.o
 *.out
-*.txt
+history.txt
+myapp_history.txt
 example
 example2
 example_sql
+example_extended
+example_history_callbacks
 crossline

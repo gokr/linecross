@@ -1,7 +1,8 @@
-## Example SQL demonstrating Crossline features
+## Example SQL demonstrating Linecross features
 ## Port of the original example_sql.c
 
-import linecross, strformat, strutils
+import linecross, std/terminal
+import strformat, strutils
 
 proc sqlAddCompletion(completions: var Completions, prefix: string, 
                      matches: seq[string], help: seq[string] = @[]) =
@@ -10,11 +11,11 @@ proc sqlAddCompletion(completions: var Completions, prefix: string,
   for i, match in matches:
     if match.toLowerAscii().startsWith(prefix.toLowerAscii()):
       if help.len > 0 and i < help.len:
-        let wcolor = if i < 8: FgYellow else: FgCyan
-        let hcolor = if i mod 2 != 0: FgWhite else: FgCyan
+        let wcolor = if i < 8: fgYellow else: fgCyan
+        let hcolor = if i mod 2 != 0: fgWhite else: fgCyan
         addCompletion(completions, match, help[i], wcolor, hcolor)
       else:
-        addCompletion(completions, match, "", FgMagenta, ColorDefault)
+        addCompletion(completions, match, "", fgMagenta, fgDefault)
 
 proc sqlFindKey(matches: seq[string], key: string): int =
   ## Find index of key in matches, case insensitive
@@ -49,9 +50,9 @@ proc sqlCompletionHook(buf: string, completions: var Completions) =
   let sqlDrop = @["TABLE", "INDEX"]
   let sqlShow = @["TABLES", "DATABASES"]
   
-  let tblColor = FgGreen
-  let colColor = FgCyan
-  let idxColor = FgYellow
+  let tblColor = fgGreen
+  let colColor = fgCyan
+  let idxColor = fgYellow
   
   # Split buffer into tokens
   let tokens = buf.splitWhitespace()
@@ -166,7 +167,7 @@ proc sqlCompletionHook(buf: string, completions: var Completions) =
     discard
 
 proc main() =
-  echo "Crossline for Nim - SQL Example"
+  echo "Linecross for Nim - SQL Example"
   echo "This Example implements a simple SQL syntax parser."
   echo ""
   echo "  INSERT INTO <table> SET column1=value1,column2=value2,..."
@@ -189,7 +190,7 @@ proc main() =
   discard loadHistory("history.txt")
   
   # Set prompt color
-  setPromptColor(FgGreen)
+  setPromptColor(fgGreen)
   
   # Main loop
   while true:

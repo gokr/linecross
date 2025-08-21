@@ -1,6 +1,6 @@
-## Crossline - A cross-platform readline replacement for Nim
+## Linecross - A cross-platform readline replacement for Nim
 ## 
-## This is a Nim port of the Crossline library, providing a small, self-contained,
+## This is a Nim port of the Linecross library, providing a small, self-contained,
 ## zero-config, cross-platform readline replacement.
 ##
 ## Features:
@@ -13,7 +13,7 @@
 ## - Multiple line editing mode
 ## - No external dependencies
 
-import std/[os, strutils, sequtils, terminal, strformat]
+import std/[terminal, strutils, os, exitprocs, strformat, sequtils]
 
 # Platform-specific imports
 when defined(posix):
@@ -21,14 +21,7 @@ when defined(posix):
 
 # Optional system clipboard integration
 when defined(useSystemClipboard):
-  try:
-    import nimclipboard
-    const hasSystemClipboard = true
-  except ImportError:
-    echo "Warning: nimclipboard not available, using internal clipboard only"
-    const hasSystemClipboard = false
-else:
-  const hasSystemClipboard = false
+  import libclip/clipboard
 
 # Platform-specific imports handled by terminal module
 
@@ -39,7 +32,7 @@ const
   
   # Default configuration values (Nim uses dynamic containers, so these are just defaults)
   DefaultHistoryMaxLines* = 256
-  DefaultHistoryMatchPatternNum* = 16
+  DefaultHistoryMaxMatches* = 40
 
 ## Key codes for special keys
 type
@@ -154,7 +147,15 @@ const
   
   EssentialFeatures* = ExtendedFeatures(
     wordMovement: true,
-    advancedCutPaste: true
+    textTransform: false,
+    advancedCutPaste: true,
+    multilineNav: false,
+    historySearch: false,
+    helpSystem: false,
+    advancedEdit: false,
+    functionKeys: FunctionKeyFeatures(f1Help: false, f2History: false, f3ClearHistory: false, f4HistorySearch: false, debugMode: false),
+    keyVariants: false,
+    advancedControls: false
   )
   
   StandardFeatures* = ExtendedFeatures(
@@ -162,7 +163,12 @@ const
     textTransform: true,
     advancedCutPaste: true,
     multilineNav: true,
-    functionKeys: FunctionKeyFeatures(f1Help: true)  # Enable F1 help
+    historySearch: false,
+    helpSystem: false,
+    advancedEdit: false,
+    functionKeys: FunctionKeyFeatures(f1Help: true, f2History: false, f3ClearHistory: false, f4HistorySearch: false, debugMode: false),  # Enable F1 help
+    keyVariants: false,
+    advancedControls: false
   )
   
   FullFeatures* = ExtendedFeatures(
@@ -184,9 +190,9 @@ const
     )
   )
 
-## Main crossline state
+## Main linecross state
 type
-  CrosslineState* = object
+  LinecrossState* = object
     # Terminal state
     isWindows*: bool
 
@@ -239,7 +245,7 @@ type
     clipBoard*: string
 
 # Global state instance
-var gState: CrosslineState
+var gState: LinecrossState
 
 ## Helper templates for control keys and special key combinations
 template ctrlKey*(key: char): int = ord(key) - 0x40
@@ -265,19 +271,6 @@ const
 
 # Special key constant for Ctrl-^
 const CtrlCaret* = 30  # Ctrl-^ (0x1E)
-
-## Low-level terminal I/O functions
-proc enableRawMode*(): bool =
-  ## Enable raw terminal mode for character-by-character input
-  # Using terminal module's built-in functionality
-  return true
-
-proc disableRawMode*() =
-  ## Restore original terminal mode  
-  try:
-    resetAttributes()
-  except:
-    discard
 
 proc getChar*(): int =
   ## Read a single character from stdin without echo
@@ -589,7 +582,7 @@ proc clearHistory*() =
   ## Clear all history
   gState.history.entries = @[]
 
-proc lookupHistory*(pattern: string, maxResults: int = DefaultHistoryMatchPatternNum): seq[string] =
+proc lookupHistory*(pattern: string, maxResults: int = DefaultHistoryMaxMatches): seq[string] =
   ## Lookup history entries matching pattern. If a user callback is registered
   ## it will be used; otherwise we fall back to a simple in-memory filter.
   if gState.historyLookupCallback != nil:
@@ -706,22 +699,16 @@ proc cutText*(startPos, endPos: int) =
     gState.buf.delete(startPos..<endPos)
     
     # Also copy to system clipboard if available
-    when defined(useSystemClipboard) and hasSystemClipboard:
-      try:
-        nimclipboard.setClipboardText(cutContent)
-      except:
-        discard  # Fall back to internal clipboard only
+    when defined(useSystemClipboard):
+      discard setClipboardText(cutContent)
 
 proc pasteText*(pos: int): int =
   ## Paste clipboard content at position, return new cursor position
   var pasteContent = ""
   
   # Try system clipboard first if available
-  when defined(useSystemClipboard) and hasSystemClipboard:
-    try:
-      pasteContent = nimclipboard.getClipboardText()
-    except:
-      pasteContent = gState.clipBoard  # Fall back to internal
+  when defined(useSystemClipboard):
+    pasteContent = getClipboardText()
   else:
     pasteContent = gState.clipBoard
   
@@ -733,11 +720,8 @@ proc pasteText*(pos: int): int =
 proc copyToClipboard*(text: string) =
   ## Copy text to both internal and system clipboard
   gState.clipBoard = text
-  when defined(useSystemClipboard) and hasSystemClipboard:
-    try:
-      nimclipboard.setClipboardText(text)
-    except:
-      discard
+  when defined(useSystemClipboard):
+    discard setClipboardText(text)
 
 ## Display functions
 proc calculatePromptLen*(prompt: string): int =
@@ -999,10 +983,8 @@ proc defaultDebugCallback(keyCode: int): string =
 ## Main readline implementation
 proc readline*(prompt: string, initialText: string = ""): string =
   ## Main readline function
-  if not enableRawMode():
-    raise newException(IOError, "Failed to enable raw mode")
   
-  defer: disableRawMode()
+  defer: resetAttributes()
   
   gState.buf = initialText
   gState.pos = initialText.len
@@ -1027,7 +1009,7 @@ proc readline*(prompt: string, initialText: string = ""): string =
     # Ctrl+C - abort
     of ctrlKey('C'), ctrlKey('G'):
       stdout.write("\n")
-      disableRawMode()
+      resetAttributes()
       quit(1)
     
     # Ctrl+D - EOF if empty, else delete char
@@ -1294,12 +1276,11 @@ proc readline*(prompt: string, initialText: string = ""): string =
       when not defined(windows):
         if gState.features.advancedControls:
           stdout.write("\n")
-          disableRawMode()
+          resetAttributes()
           # Send SIGTSTP to suspend the process
           when defined(posix):
             discard kill(getpid(), SIGTSTP)
           # Process will be suspended here until resumed with 'fg'
-          discard enableRawMode()  # Re-enable when resumed
           refreshLine()
     
     # Function keys with individual enable/disable control
@@ -1511,10 +1492,10 @@ proc checkPaging*(lineCount: int = 1): bool =
   
   return false
 
-## Initialize the crossline state
-proc initCrossline*(features: ExtendedFeatures = BasicFeatures) =
-  ## Initialize crossline with optional extended features
-  gState = CrosslineState()
+## Initialize the linecross state
+proc initLinecross*(features: ExtendedFeatures = BasicFeatures) =
+  ## Initialize linecross with optional extended features
+  gState = LinecrossState()
   gState.isWindows = defined(windows)
   gState.delimiter = DefaultDelimiter
   gState.history = History(maxLines: DefaultHistoryMaxLines)
@@ -1523,11 +1504,11 @@ proc initCrossline*(features: ExtendedFeatures = BasicFeatures) =
   gState.pagingEnabled = false
   gState.features = features
   gState.clipBoard = ""
-  
+    
   # Get initial screen size
   let (rows, cols) = getScreenSize()
   gState.rows = rows
   gState.cols = cols
 
-# Initialize on module load
-initCrossline()
+  # Register so we reset on forced exit
+  exitprocs.addExitProc(resetAttributes)
