@@ -208,7 +208,6 @@ type
     prompt*: string
 
     # Display state
-    promptLen*: int
     cols*: int
     rows*: int
 
@@ -743,20 +742,6 @@ proc copyToClipboard*(text: string) =
     discard setClipboardText(text)
 
 ## Display functions
-proc calculatePromptLen*(prompt: string): int =
-  ## Calculate visible length of prompt (excluding ANSI codes)
-  var len = 0
-  var inEscape = false
-  
-  for ch in prompt:
-    if ch == '\x1b':
-      inEscape = true
-    elif inEscape and ch == 'm':
-      inEscape = false
-    elif not inEscape:
-      inc len
-  
-  return len
 
 proc refreshLine*() =
   ## Refresh the current line display
@@ -768,20 +753,20 @@ proc refreshLine*() =
   stdout.write(gState.prompt)
   resetAttributes()
   
-  # Display buffer
-  stdout.write(gState.buf)
+  # Display the buffer up to cursor position (natural cursor positioning)
+  stdout.write(gState.buf[0..<gState.pos])
   
-  # Clear rest of line
+  # Clear rest of line 
   stdout.write("\x1b[K")
   
-  # Position cursor at correct column (0-based indexing)
-  let cursorCol = gState.promptLen + gState.pos
-  # Option A: Relative positioning from start of line (fixes off-by-one error)
-  stdout.write(&"\r\x1b[{cursorCol}C")
-  # Option B: Use terminal module absolute positioning
-  # terminal.setCursorPos(cursorCol, getCurrentRow())  
-  # Option C: ANSI absolute column positioning  
-  # stdout.write(&"\r\x1b[{cursorCol + 1}G")
+  # Display the rest of buffer after cursor position
+  stdout.write(gState.buf[gState.pos..^1])
+  
+  # Move cursor back to correct position by printing backspaces
+  let charsAfterCursor = gState.buf.len - gState.pos
+  if charsAfterCursor > 0:
+    stdout.write("\x1b[" & $charsAfterCursor & "D")  # Move cursor left
+  
   stdout.flushFile()
 
 ## Completion system
@@ -814,9 +799,13 @@ proc longestCommonPrefix(words: seq[string]): string =
 
 proc clearDisplayBelowPrompt() =
   ## Clear any displayed lines below the prompt
-  # Position cursor back at the prompt line at the end of input
-  let cursorCol = gState.promptLen + gState.pos
-  stdout.write(&"\r\x1b[{cursorCol}C")
+  # Position cursor back at the prompt line at the current input position
+  # Go to start of line, display prompt and buffer up to cursor position
+  stdout.write("\r")
+  setTextColor(gState.promptColor, gState.promptStyle)
+  stdout.write(gState.prompt)
+  resetAttributes()
+  stdout.write(gState.buf[0..<gState.pos])
   # Clear from cursor to end of screen
   stdout.write("\x1b[0J")
   stdout.flushFile()
@@ -867,11 +856,14 @@ proc triggerCompletion*() =
       if gState.features.inPlaceCompletion:
         gState.completionDisplayLines = lineCount
       
-      # Position cursor at the end of the input line
-      let cursorCol = gState.promptLen + gState.pos
+      # Position cursor at the current input position
       if lineCount > 0:
-        stdout.write(&"\x1b[{lineCount}A")
-      stdout.write(&"\r\x1b[{cursorCol}C")
+        stdout.write(&"\x1b[{lineCount}A")  # Move up to input line
+      stdout.write("\r")  # Go to start of line
+      setTextColor(gState.promptColor, gState.promptStyle)
+      stdout.write(gState.prompt)
+      resetAttributes()
+      stdout.write(gState.buf[0..<gState.pos])  # Natural cursor positioning
       stdout.flushFile()
     
     # Reset bash completion state after showing matches
@@ -1090,7 +1082,6 @@ proc defaultDebugCallback(keyCode: int): string =
 
 proc setPrompt*(prompt: string) =
   gState.prompt = prompt
-  gState.promptLen = calculatePromptLen(prompt)
 
 proc readline*(prompt: string, initialText: string = ""): string =
   ## Main readline function
