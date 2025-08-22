@@ -229,11 +229,7 @@ type
     # Completion
     completionCallback*: CompletionCallback
     completions*: Completions
-    completionOriginalCompletions*: Completions  # Original completions for cycling
     completionDisplayLines*: int  # Track lines used by completion display
-    completionCycleIndex*: int    # Current index for cycling through completions
-    completionCycleActive*: bool  # Whether we're in completion cycling mode
-    completionOriginalInput*: string  # Original input before cycling
     
     # Bash-like completion state
     bashCompletionWaiting*: bool    # True if we're waiting for second tab press
@@ -829,10 +825,6 @@ proc clearCompletionDisplay() =
   if gState.features.inPlaceCompletion and gState.completionDisplayLines > 0:
     clearDisplayBelowPrompt()
     gState.completionDisplayLines = 0
-  # Reset completion cycling state
-  gState.completionCycleActive = false
-  gState.completionCycleIndex = 0
-  gState.completionOriginalInput = ""
   # Reset bash completion state
   gState.bashCompletionWaiting = false
   gState.bashCompletionPrefix = ""
@@ -1123,13 +1115,8 @@ proc readline*(prompt: string, initialText: string = ""): string =
 
     # Then we check all other keys
     case key:
-    # Enter - accept line or completion
+    # Enter - accept line
     of ord(KeyEnter), ord(KeyEnter2):
-      # If we're in completion cycling mode, accept the current completion and clear display
-      if gState.completionCycleActive:
-        clearCompletionDisplay()
-        refreshLine()  # Redraw the line with accepted completion
-      
       stdout.write("\n")
       let line = gState.buf
       if line.len > 0:
@@ -1487,17 +1474,10 @@ proc readline*(prompt: string, initialText: string = ""): string =
     # Regular character input
     else:
       if key >= 32 and key <= 126:  # Printable ASCII
-        # Special case: if cycling and user types space, accept completion and add space
-        if gState.completionCycleActive and key == ord(' '):
-          clearCompletionDisplay()
-          insertChar(' ', gState.pos)
-          inc gState.pos
-          refreshLine()
-        else:
-          clearCompletionDisplay()  # Clear any previous completion display
-          insertChar(char(key), gState.pos)
-          inc gState.pos
-          refreshLine()
+        clearCompletionDisplay()  # Clear any previous completion display
+        insertChar(char(key), gState.pos)
+        inc gState.pos
+        refreshLine()
 
 ## Public API functions
 proc setDelimiter*(delim: string) =

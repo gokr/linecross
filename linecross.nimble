@@ -1,6 +1,6 @@
 # Package
 
-version       = "1.0.0"
+version       = "1.0.2"
 author        = "Göran Krampe"
 description   = "Linecross - cross-platform readline replacement with configurable extended shortcuts"
 license       = "MIT"
