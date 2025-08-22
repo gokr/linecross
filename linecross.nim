@@ -107,6 +107,9 @@ type
   HistorySearchCallback* = proc(pattern: string, reverse: bool): seq[string] {.nimcall.}
   CompletionListCallback* = proc(buf: string): string {.nimcall.}
   
+  # Custom key combination callback - returns true if key was handled
+  CustomKeyCallback* = proc(keyCode: int, buffer: string): bool {.nimcall.}
+  
   # Individual F-key and feature control
   FunctionKeyFeatures* = object
     f1Help*: bool             # F1 shows help
@@ -140,6 +143,7 @@ type
     functionKeys*: FunctionKeyFeatures  # Individual F-key control
     keyVariants*: bool       # ESC+, Ctrl+, Alt+ key sequence variants
     advancedControls*: bool  # Insert, Alt-\, Alt-R, Alt-=, etc.
+    inPlaceCompletion*: bool # In-place completion display updates
 
 ## Predefined feature sets
 const
@@ -155,7 +159,8 @@ const
     advancedEdit: false,
     functionKeys: FunctionKeyFeatures(f1Help: false, f2History: false, f3ClearHistory: false, f4HistorySearch: false, debugMode: false),
     keyVariants: false,
-    advancedControls: false
+    advancedControls: false,
+    inPlaceCompletion: true  # Include in-place completion in essential features
   )
   
   StandardFeatures* = ExtendedFeatures(
@@ -181,6 +186,7 @@ const
     advancedEdit: true,
     keyVariants: true,
     advancedControls: true,
+    inPlaceCompletion: true,
     functionKeys: FunctionKeyFeatures(  # Enable all function keys
       f1Help: true,
       f2History: true,
@@ -223,6 +229,16 @@ type
     # Completion
     completionCallback*: CompletionCallback
     completions*: Completions
+    completionOriginalCompletions*: Completions  # Original completions for cycling
+    completionDisplayLines*: int  # Track lines used by completion display
+    completionCycleIndex*: int    # Current index for cycling through completions
+    completionCycleActive*: bool  # Whether we're in completion cycling mode
+    completionOriginalInput*: string  # Original input before cycling
+    
+    # Bash-like completion state
+    bashCompletionWaiting*: bool    # True if we're waiting for second tab press
+    bashCompletionPrefix*: string   # Prefix we were trying to complete
+    bashCompletionMatches*: Completions  # Stored matches from first tab press
 
     # Function key and UI callbacks (optional - defaults provided if nil)
     helpCallback*: HelpCallback
@@ -231,6 +247,7 @@ type
     debugCallback*: DebugCallback
     historySearchCallback*: HistorySearchCallback
     completionListCallback*: CompletionListCallback
+    customKeyCallback*: CustomKeyCallback
 
     # Multi-line support
     multiLine*: bool
@@ -271,6 +288,12 @@ const
 
 # Special key constant for Ctrl-^
 const CtrlCaret* = 30  # Ctrl-^ (0x1E)
+
+# Special key constant for Ctrl+Tab
+const CtrlTab* = 0x00  # Ctrl+Tab generates 0x00 in most terminals
+
+# Special key constant for Shift+Tab
+const ShiftTab* = 91  # Standard Shift+Tab key code
 
 proc getChar*(): int =
   ## Read a single character from stdin without echo
@@ -741,8 +764,6 @@ proc calculatePromptLen*(prompt: string): int =
 
 proc refreshLine*() =
   ## Refresh the current line display
-  let promptLen = calculatePromptLen(gState.prompt)
-  
   # Go to beginning of line
   stdout.write("\r")
   
@@ -758,7 +779,7 @@ proc refreshLine*() =
   stdout.write("\x1b[K")
   
   # Position cursor at correct column (0-based indexing)
-  let cursorCol = promptLen + gState.pos
+  let cursorCol = gState.promptLen + gState.pos
   # Option A: Relative positioning from start of line (fixes off-by-one error)
   stdout.write(&"\r\x1b[{cursorCol}C")
   # Option B: Use terminal module absolute positioning
@@ -768,44 +789,139 @@ proc refreshLine*() =
   stdout.flushFile()
 
 ## Completion system
+proc longestCommonPrefix(words: seq[string]): string =
+  ## Calculate the longest common prefix among a sequence of words
+  if words.len == 0:
+    return ""
+  if words.len == 1:
+    return words[0]
+  
+  var commonPrefix = ""
+  var minLen = words[0].len
+  for word in words[1..^1]:
+    if word.len < minLen:
+      minLen = word.len
+  
+  for i in 0..<minLen:
+    let ch = words[0][i]
+    var allMatch = true
+    for word in words[1..^1]:
+      if word[i] != ch:
+        allMatch = false
+        break
+    if allMatch:
+      commonPrefix.add(ch)
+    else:
+      break
+  
+  return commonPrefix
+
+proc clearDisplayBelowPrompt() =
+  ## Clear any displayed lines below the prompt
+  # Position cursor back at the prompt line at the end of input
+  let cursorCol = gState.promptLen + gState.pos
+  stdout.write(&"\r\x1b[{cursorCol}C")
+  # Clear from cursor to end of screen
+  stdout.write("\x1b[0J")
+  stdout.flushFile()
+
+proc clearCompletionDisplay() =
+  if gState.features.inPlaceCompletion and gState.completionDisplayLines > 0:
+    clearDisplayBelowPrompt()
+    gState.completionDisplayLines = 0
+  # Reset completion cycling state
+  gState.completionCycleActive = false
+  gState.completionCycleIndex = 0
+  gState.completionOriginalInput = ""
+  # Reset bash completion state
+  gState.bashCompletionWaiting = false
+  gState.bashCompletionPrefix = ""
+
 proc triggerCompletion*() =
-  ## Trigger completion callback and show results
+  ## Trigger completion callback with bash-like behavior
   if gState.completionCallback == nil:
     return
   
+  # Get current completion context
+  let spacePos = gState.buf.rfind(' ')
+  let wordStart = if spacePos == -1: 0 else: spacePos + 1
+  let currentWord = gState.buf[wordStart..^1]
+  let currentPrefix = if currentWord.startsWith("/") and currentWord.len > 1: currentWord[1..^1] else: currentWord
+  
+  # Check if this is a second consecutive tab with same prefix
+  if gState.bashCompletionWaiting and gState.bashCompletionPrefix == currentPrefix:
+    # Second tab - show the matches we stored from first tab
+    clearCompletionDisplay()
+    
+    if gState.bashCompletionMatches.items.len > 0:
+      stdout.write("\n")
+      var lineCount = if gState.features.inPlaceCompletion: 1 else: 0
+      
+      for item in gState.bashCompletionMatches.items:
+        setTextColor(item.wordColor, item.wordStyle)
+        stdout.write(item.word)
+        resetAttributes()
+        
+        if item.help.len > 0:
+          stdout.write("  ")
+          setTextColor(item.helpColor, item.helpStyle)
+          stdout.write(item.help)
+          resetAttributes()
+        
+        stdout.write("\n")
+        if gState.features.inPlaceCompletion:
+          inc lineCount
+      
+      if gState.features.inPlaceCompletion:
+        gState.completionDisplayLines = lineCount
+      
+      # Position cursor at the end of the input line
+      let cursorCol = gState.promptLen + gState.pos
+      if lineCount > 0:
+        stdout.write(&"\x1b[{lineCount}A")
+      stdout.write(&"\r\x1b[{cursorCol}C")
+      stdout.flushFile()
+    
+    # Reset bash completion state after showing matches
+    gState.bashCompletionWaiting = false
+    gState.bashCompletionPrefix = ""
+    return
+  
+  # First tab or different prefix - get fresh completions
   gState.completions = Completions()
   gState.completionCallback(gState.buf, gState.completions)
   
   if gState.completions.items.len == 0:
+    # No matches - clear any previous state
+    clearCompletionDisplay()
+    gState.bashCompletionWaiting = false
+    gState.bashCompletionPrefix = ""
     return
   
   if gState.completions.items.len == 1:
-    # Single match - complete it
+    # Single match - complete it fully and add space (bash behavior)
     let completion = gState.completions.items[0]
-    let prefix = gState.buf.split(' ')[^1]
+    let rawPrefix = gState.buf.split(' ')[^1]
+    let prefix = if rawPrefix.startsWith("/") and rawPrefix.len > 1: rawPrefix[1..^1] else: rawPrefix
+    
     if completion.word.startsWith(prefix):
       let remaining = completion.word[prefix.len..^1]
       for ch in remaining:
         insertChar(ch, gState.pos)
         inc gState.pos
+      # Add space after single completion (bash behavior)
+      insertChar(' ', gState.pos)
+      inc gState.pos
       refreshLine()
-  else:
-    # Multiple matches - show them
-    stdout.write("\n")
-    for item in gState.completions.items:
-      setTextColor(item.wordColor, item.wordStyle)
-      stdout.write(item.word)
-      resetAttributes()
-      
-      if item.help.len > 0:
-        stdout.write("  ")
-        setTextColor(item.helpColor, item.helpStyle)
-        stdout.write(item.help)
-        resetAttributes()
-      
-      stdout.write("\n")
     
-    refreshLine()
+    # Clear bash completion state
+    gState.bashCompletionWaiting = false
+    gState.bashCompletionPrefix = ""
+  else:
+    # Multiple matches - first tab does nothing, just store matches
+    gState.bashCompletionWaiting = true
+    gState.bashCompletionPrefix = currentPrefix
+    gState.bashCompletionMatches = gState.completions
 
 ## Default callback implementations (used when user callbacks are nil)
 proc defaultHelpCallback(): string =
@@ -980,26 +1096,40 @@ proc defaultDebugCallback(keyCode: int): string =
   debug.add "\nPress any key to continue..."
   return debug
 
-## Main readline implementation
+proc setPrompt*(prompt: string) =
+  gState.prompt = prompt
+  gState.promptLen = calculatePromptLen(prompt)
+
 proc readline*(prompt: string, initialText: string = ""): string =
   ## Main readline function
   
   defer: resetAttributes()
-  
+
+  setPrompt(prompt)
   gState.buf = initialText
   gState.pos = initialText.len
-  gState.prompt = prompt
-  gState.promptLen = calculatePromptLen(prompt)
   gState.historyPos = gState.history.entries.len
   
   refreshLine()
   
   while true:
     let key = getKey()
-    
+    #echo "KEY: " & $key
+    # First custom key handling (mode switching, etc.)
+    if gState.customKeyCallback != nil and gState.customKeyCallback(key, gState.buf):
+      # Custom key was handled - refresh the prompt and continue
+      refreshLine()
+      continue
+
+    # Then we check all other keys
     case key:
-    # Enter - accept line
+    # Enter - accept line or completion
     of ord(KeyEnter), ord(KeyEnter2):
+      # If we're in completion cycling mode, accept the current completion and clear display
+      if gState.completionCycleActive:
+        clearCompletionDisplay()
+        refreshLine()  # Redraw the line with accepted completion
+      
       stdout.write("\n")
       let line = gState.buf
       if line.len > 0:
@@ -1024,6 +1154,7 @@ proc readline*(prompt: string, initialText: string = ""): string =
     
     # Backspace
     of ord(KeyBackspace), ord(KeyDel2):  # KeyBackspace (8) and Ctrl+H are the same
+      clearCompletionDisplay()
       if gState.pos > 0:
         dec gState.pos
         deleteChar(gState.pos)
@@ -1031,26 +1162,31 @@ proc readline*(prompt: string, initialText: string = ""): string =
     
     # Delete
     of ord(KeyDelete):
+      clearCompletionDisplay()
       if gState.pos < gState.buf.len:
         deleteChar(gState.pos)
         refreshLine()
     
     # Movement keys
     of ord(KeyLeft), ctrlKey('B'):
+      clearCompletionDisplay()
       if gState.pos > 0:
         dec gState.pos
         refreshLine()
     
     of ord(KeyRight), ctrlKey('F'):
+      clearCompletionDisplay()
       if gState.pos < gState.buf.len:
         inc gState.pos
         refreshLine()
     
     of ord(KeyHome), ctrlKey('A'):
+      clearCompletionDisplay()
       gState.pos = 0
       refreshLine()
     
     of ord(KeyEnd), ctrlKey('E'):
+      clearCompletionDisplay()
       gState.pos = gState.buf.len
       refreshLine()
     
@@ -1092,7 +1228,7 @@ proc readline*(prompt: string, initialText: string = ""): string =
     # Tab completion
     of ord(KeyTab):  # Tab key (9) and Ctrl+I are the same
       triggerCompletion()
-    
+        
     # Clear screen
     of ctrlKey('L'):
       clearScreen()
@@ -1351,9 +1487,17 @@ proc readline*(prompt: string, initialText: string = ""): string =
     # Regular character input
     else:
       if key >= 32 and key <= 126:  # Printable ASCII
-        insertChar(char(key), gState.pos)
-        inc gState.pos
-        refreshLine()
+        # Special case: if cycling and user types space, accept completion and add space
+        if gState.completionCycleActive and key == ord(' '):
+          clearCompletionDisplay()
+          insertChar(' ', gState.pos)
+          inc gState.pos
+          refreshLine()
+        else:
+          clearCompletionDisplay()  # Clear any previous completion display
+          insertChar(char(key), gState.pos)
+          inc gState.pos
+          refreshLine()
 
 ## Public API functions
 proc setDelimiter*(delim: string) =
@@ -1441,6 +1585,10 @@ proc registerCompletionListCallback*(callback: CompletionListCallback) =
   ## Register custom completion list display callback for Alt-=/? 
   gState.completionListCallback = callback
 
+proc registerCustomKeyCallback*(callback: CustomKeyCallback) =
+  ## Register custom key combination callback (e.g., for Ctrl+Tab mode switching)
+  gState.customKeyCallback = callback
+
 proc setHistoryEntries*(entries: seq[string]) =
   ## Set history entries directly (useful with custom loaders)
   gState.history.entries = entries
@@ -1504,6 +1652,10 @@ proc initLinecross*(features: ExtendedFeatures = BasicFeatures) =
   gState.pagingEnabled = false
   gState.features = features
   gState.clipBoard = ""
+  
+  # Initialize bash completion state
+  gState.bashCompletionWaiting = false
+  gState.bashCompletionPrefix = ""
     
   # Get initial screen size
   let (rows, cols) = getScreenSize()
