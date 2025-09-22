@@ -110,6 +110,30 @@ type
   # Custom key combination callback - returns true if key was handled
   CustomKeyCallback* = proc(keyCode: int, buffer: string): bool {.nimcall.}
   
+  # Enhanced display callbacks for persistent input area
+  CompletionDisplayCallback* = proc(completions: Completions, prefix: string) {.nimcall.}
+  CompletionClearCallback* = proc() {.nimcall.}
+  
+  # Output mode for persistent input area management
+  OutputMode* = enum
+    omNormal,     # Normal single-line input at bottom
+    omPersistent  # Persistent input area with scrollable output above
+  
+  # Saved input state for restoration after output
+  InputState* = object
+    buffer*: string
+    cursorPos*: int
+    promptText*: string
+    displayLines*: int  # How many lines the input currently occupies
+  
+  # Configuration for persistent mode
+  PersistentModeConfig* = object
+    inputAreaMaxHeight*: int      # Maximum lines for input area (default: 5)
+    scrollableAreaMinHeight*: int # Minimum space for output (default: 10)
+    enablePaging*: bool          # Enable automatic paging (default: true)
+    pagingPrompt*: string        # Custom paging prompt
+    reserveStatusLine*: bool     # Reserve line for status info (default: false)
+  
   # Individual F-key and feature control
   FunctionKeyFeatures* = object
     f1Help*: bool             # F1 shows help
@@ -196,6 +220,16 @@ const
     )
   )
 
+## Default persistent mode configuration
+const
+  DefaultPersistentConfig* = PersistentModeConfig(
+    inputAreaMaxHeight: 5,
+    scrollableAreaMinHeight: 10,
+    enablePaging: true,
+    pagingPrompt: "[More... Press any key to continue, 'q' to quit]",
+    reserveStatusLine: false
+  )
+
 ## Main linecross state
 type
   LinecrossState* = object
@@ -256,6 +290,19 @@ type
     # Clipboard for cut/paste operations
     clipBoard*: string
 
+    # Enhanced display callbacks for persistent input area
+    completionDisplayCallback*: CompletionDisplayCallback
+    completionClearCallback*: CompletionClearCallback
+
+    # Persistent input area management
+    outputMode*: OutputMode           # Current display mode
+    inputAreaHeight*: int             # Height of persistent input area (lines)
+    inputAreaStartRow*: int           # Absolute row where input area begins  
+    scrollableAreaHeight*: int        # Available space above input area
+    savedInputState*: InputState      # Saved state for restoration
+    persistentConfig*: PersistentModeConfig  # Configuration for persistent mode
+    belowContentClearMs*: int         # Auto-clear timeout for content below input area
+
 # Global state instance
 var gState: LinecrossState
 
@@ -302,7 +349,10 @@ proc getScreenSize*(): (int, int) =
   ## Get terminal screen size (rows, cols)
   try:
     let (w, h) = terminalSize()
-    return (h, w)
+    # Ensure we have sensible minimum values
+    let rows = if h <= 0: 25 else: h
+    let cols = if w <= 0: 80 else: w
+    return (rows, cols)
   except:
     return (25, 80)  # fallback
 
@@ -743,31 +793,161 @@ proc copyToClipboard*(text: string) =
 
 ## Display functions
 
-proc refreshLine*() =
-  ## Refresh the current line display
-  # Go to beginning of line
-  stdout.write("\r")
+## Multiline text calculation helpers
+proc calculatePromptDisplayLength(): int =
+  ## Calculate the display length of the prompt (excluding color codes)
+  return gState.prompt.len
+
+proc calculateWrappedPosition(bufPos: int): (int, int) =
+  ## Calculate which screen line and column a buffer position corresponds to
+  ## Returns (lineNum, colNum) where lineNum=0 is the first line
+  let promptLen = calculatePromptDisplayLength()
+  let totalCharsBeforeCursor = promptLen + bufPos
+  let lineNum = totalCharsBeforeCursor div gState.cols
+  let colNum = totalCharsBeforeCursor mod gState.cols
+  return (lineNum, colNum)
+
+proc calculateTotalLines(): int =
+  ## Calculate total screen lines needed for current buffer
+  let promptLen = calculatePromptDisplayLength()
+  let totalChars = promptLen + gState.buf.len
+  return max(1, (totalChars + gState.cols - 1) div gState.cols)
+
+proc getPhysicalCursorPos(): (int, int) =
+  ## Get current physical screen position of cursor
+  return calculateWrappedPosition(gState.pos)
+
+proc getCurrentLineInBuffer(): int =
+  ## Get which wrapped line the cursor is currently on (0-based)
+  let (lineNum, _) = calculateWrappedPosition(gState.pos)
+  return lineNum
+
+proc isAtStartOfLine(): bool =
+  ## Check if cursor is at the start of a wrapped line
+  let (_, colNum) = calculateWrappedPosition(gState.pos)
+  let promptLen = calculatePromptDisplayLength()
+  return colNum == 0 or (getCurrentLineInBuffer() == 0 and gState.pos == 0)
+
+proc isAtEndOfLine(): bool =
+  ## Check if cursor is at the end of a wrapped line
+  let (lineNum, colNum) = calculateWrappedPosition(gState.pos)
+  let totalLines = calculateTotalLines()
+  # At end if we're on the last line and at the actual end of buffer
+  return lineNum == totalLines - 1 and gState.pos == gState.buf.len
+
+proc moveToLine(targetLine: int): int =
+  ## Move cursor to start of specified wrapped line, return new buffer position
+  if targetLine < 0:
+    return 0
+  
+  let promptLen = calculatePromptDisplayLength()
+  let targetPos = max(0, targetLine * gState.cols - promptLen)
+  return min(targetPos, gState.buf.len)
+
+proc findBufferPosForLineCol(lineNum: int, colNum: int): int =
+  ## Find buffer position for given screen line and column
+  let promptLen = calculatePromptDisplayLength()
+  let totalPos = lineNum * gState.cols + colNum
+  let bufPos = totalPos - promptLen
+  return max(0, min(bufPos, gState.buf.len))
+
+proc refreshPersistentInputArea() =
+  ## Refresh display in persistent input area mode
+  # Move to start of input area
+  stdout.write(&"\x1b[{gState.inputAreaStartRow}H")
+  
+  # Clear the input area
+  for i in 0..<gState.inputAreaHeight:
+    stdout.write(&"\x1b[{gState.inputAreaStartRow + i}H")
+    stdout.write("\x1b[K")  # Clear line
+  
+  # Move back to start of input area
+  stdout.write(&"\x1b[{gState.inputAreaStartRow}H")
   
   # Display prompt with color
   setTextColor(gState.promptColor, gState.promptStyle)
   stdout.write(gState.prompt)
   resetAttributes()
   
-  # Display the buffer up to cursor position (natural cursor positioning)
-  stdout.write(gState.buf[0..<gState.pos])
+  # Display the entire buffer
+  stdout.write(gState.buf)
   
-  # Clear rest of line 
-  stdout.write("\x1b[K")
+  # Calculate cursor position within the input area
+  let promptLen = calculatePromptDisplayLength()
+  let totalCharsBeforeCursor = promptLen + gState.pos
+  let cursorLine = totalCharsBeforeCursor div gState.cols
+  let cursorCol = totalCharsBeforeCursor mod gState.cols
   
-  # Display the rest of buffer after cursor position
-  stdout.write(gState.buf[gState.pos..^1])
-  
-  # Move cursor back to correct position by printing backspaces
-  let charsAfterCursor = gState.buf.len - gState.pos
-  if charsAfterCursor > 0:
-    stdout.write("\x1b[" & $charsAfterCursor & "D")  # Move cursor left
+  # Position cursor correctly within the input area
+  let targetRow = gState.inputAreaStartRow + cursorLine
+  stdout.write(&"\x1b[{targetRow}H")
+  if cursorCol > 0:
+    stdout.write(&"\x1b[{cursorCol}C")
   
   stdout.flushFile()
+
+proc refreshNormalInputLine() =
+  ## Refresh display in normal mode - proper multiline handling without repetition
+  let promptLen = calculatePromptDisplayLength()
+  let totalCharsBeforeCursor = promptLen + gState.pos
+  let totalChars = promptLen + gState.buf.len
+  let cursorLine = totalCharsBeforeCursor div gState.cols
+  let cursorCol = totalCharsBeforeCursor mod gState.cols
+  let totalLines = max(1, (totalChars + gState.cols - 1) div gState.cols)
+  
+  # First, move to the start of the first line if we're on a wrapped line
+  if cursorLine > 0:
+    stdout.write(&"\x1b[{cursorLine}A")  # Move up to first line
+  
+  # Go to start of line
+  stdout.write("\r")
+  
+  # Clear all content that might be there (including wrapped lines)
+  stdout.write("\x1b[0J")
+  
+  # Display prompt with color
+  setTextColor(gState.promptColor, gState.promptStyle)
+  stdout.write(gState.prompt)
+  resetAttributes()
+  
+  # Display the entire buffer (let terminal handle natural wrapping)
+  stdout.write(gState.buf)
+  
+  # Now position cursor correctly using absolute positioning
+  # We're at the end of the buffer, need to move to cursor position
+  let targetLine = cursorLine
+  let targetCol = cursorCol
+  
+  # Use absolute positioning instead of relative character movement
+  if totalLines > 1:
+    # Multi-line case: go to first line, then move to target position
+    stdout.write("\r")  # Go to start of current (last) line
+    
+    # Move up to first line
+    if totalLines > 1:
+      stdout.write(&"\x1b[{totalLines - 1}A")
+    
+    # Move down to target line
+    if targetLine > 0:
+      stdout.write(&"\x1b[{targetLine}B")
+    
+    # Move to target column
+    if targetCol > 0:
+      stdout.write(&"\x1b[{targetCol}C")
+  else:
+    # Single line case: simple positioning
+    stdout.write("\r")
+    if cursorCol > 0:
+      stdout.write(&"\x1b[{cursorCol}C")
+  
+  stdout.flushFile()
+
+proc refreshLine*() =
+  ## Refresh the multiline-aware display
+  if gState.outputMode == omPersistent:
+    refreshPersistentInputArea()
+  else:
+    refreshNormalInputLine()
 
 ## Completion system
 proc longestCommonPrefix(words: seq[string]): string =
@@ -1183,25 +1363,53 @@ proc readline*(prompt: string, initialText: string = ""): string =
         gState.pos = moveToWordStart(gState.pos)
         refreshLine()
     
-    # History navigation
+    # Intelligent Up/Down navigation (multiline-aware history navigation)
     of ord(KeyUp), ctrlKey('P'):
-      if gState.historyPos > 0:
-        dec gState.historyPos
-        gState.buf = gState.history.entries[gState.historyPos]
-        gState.pos = gState.buf.len
-        refreshLine()
+      let currentLine = getCurrentLineInBuffer()
+      let totalLines = calculateTotalLines()
+      
+      # If we're on the first line of a multiline input, navigate history
+      # If we're on a subsequent line, move up within the current input
+      if currentLine == 0 or totalLines == 1:
+        # Navigate to previous history entry
+        if gState.historyPos > 0:
+          dec gState.historyPos
+          gState.buf = gState.history.entries[gState.historyPos]
+          gState.pos = gState.buf.len
+          refreshLine()
+      else:
+        # Move cursor up one line within current input
+        let (currentLineNum, currentCol) = calculateWrappedPosition(gState.pos)
+        if currentLineNum > 0:
+          let newPos = findBufferPosForLineCol(currentLineNum - 1, currentCol)
+          gState.pos = newPos
+          refreshLine()
     
     of ord(KeyDown), ctrlKey('N'):
-      if gState.historyPos < gState.history.entries.len - 1:
-        inc gState.historyPos
-        gState.buf = gState.history.entries[gState.historyPos]
-        gState.pos = gState.buf.len
-        refreshLine()
-      elif gState.historyPos == gState.history.entries.len - 1:
-        inc gState.historyPos
-        gState.buf = ""
-        gState.pos = 0
-        refreshLine()
+      let currentLine = getCurrentLineInBuffer()
+      let totalLines = calculateTotalLines()
+      let (currentLineNum, currentCol) = calculateWrappedPosition(gState.pos)
+      
+      # If we're on the last line or cursor is at the end, navigate history
+      # Otherwise, move down within the current input
+      if currentLine == totalLines - 1 or gState.pos == gState.buf.len:
+        # Navigate to next history entry
+        if gState.historyPos < gState.history.entries.len - 1:
+          inc gState.historyPos
+          gState.buf = gState.history.entries[gState.historyPos]
+          gState.pos = gState.buf.len
+          refreshLine()
+        elif gState.historyPos == gState.history.entries.len - 1:
+          inc gState.historyPos
+          gState.buf = ""
+          gState.pos = 0
+          refreshLine()
+      else:
+        # Move cursor down one line within current input
+        if currentLineNum < totalLines - 1:
+          let newPos = findBufferPosForLineCol(currentLineNum + 1, currentCol)
+          gState.pos = newPos
+          refreshLine()
     
     # Tab completion
     of ord(KeyTab):  # Tab key (9) and Ctrl+I are the same
@@ -1292,13 +1500,22 @@ proc readline*(prompt: string, initialText: string = ""): string =
     
     of altKey(ord(KeyUp)):  # Ctrl-Up, Alt-Up variants -> multi-line up
       if gState.features.keyVariants and gState.features.multilineNav:
-        # Multi-line navigation up (if implemented)
-        discard  # Placeholder for multi-line implementation
+        # Move cursor up one line within the current input (always, regardless of history)
+        let (currentLineNum, currentCol) = calculateWrappedPosition(gState.pos)
+        if currentLineNum > 0:
+          let newPos = findBufferPosForLineCol(currentLineNum - 1, currentCol)
+          gState.pos = newPos
+          refreshLine()
     
     of altKey(ord(KeyDown)):  # Ctrl-Down, Alt-Down variants -> multi-line down
       if gState.features.keyVariants and gState.features.multilineNav:
-        # Multi-line navigation down (if implemented) 
-        discard  # Placeholder for multi-line implementation
+        # Move cursor down one line within the current input (always, regardless of history)
+        let (currentLineNum, currentCol) = calculateWrappedPosition(gState.pos)
+        let totalLines = calculateTotalLines()
+        if currentLineNum < totalLines - 1:
+          let newPos = findBufferPosForLineCol(currentLineNum + 1, currentCol)
+          gState.pos = newPos
+          refreshLine()
     
     # Extended shortcuts - Advanced Editing
     of ctrlKey('T'):  # Ctrl-T: Transpose characters
@@ -1468,7 +1685,15 @@ proc readline*(prompt: string, initialText: string = ""): string =
         clearCompletionDisplay()  # Clear any previous completion display
         insertChar(char(key), gState.pos)
         inc gState.pos
-        refreshLine()
+        
+        # Incremental update instead of full redraw
+        if gState.pos == gState.buf.len:
+          # Character added at end - just print it
+          stdout.write(char(key))
+          stdout.flushFile()
+        else:
+          # Character inserted in middle - need full refresh
+          refreshLine()
 
 ## Public API functions
 proc setDelimiter*(delim: string) =
@@ -1632,6 +1857,306 @@ proc initLinecross*(features: ExtendedFeatures = BasicFeatures) =
   let (rows, cols) = getScreenSize()
   gState.rows = rows
   gState.cols = cols
+  
+  # Initialize persistent mode settings
+  gState.outputMode = omNormal
+  gState.inputAreaHeight = 1
+  gState.inputAreaStartRow = rows
+  gState.scrollableAreaHeight = rows - 1  
+  gState.persistentConfig = DefaultPersistentConfig
+  gState.savedInputState = InputState()
 
   # Register so we reset on forced exit
   exitprocs.addExitProc(resetAttributes)
+
+## Persistent input area management functions
+
+proc calculateInputAreaHeight*(): int =
+  ## Calculate how many lines the current input buffer needs
+  if gState.buf.len == 0:
+    return 1  # Always need at least one line for the prompt
+  
+  let promptLen = calculatePromptDisplayLength()  
+  let totalChars = promptLen + gState.buf.len
+  return max(1, (totalChars + gState.cols - 1) div gState.cols)
+
+proc saveInputState*() =
+  ## Save the current input state for later restoration
+  gState.savedInputState = InputState(
+    buffer: gState.buf,
+    cursorPos: gState.pos,
+    promptText: gState.prompt,
+    displayLines: calculateInputAreaHeight()
+  )
+
+proc restoreInputState*() =
+  ## Restore the previously saved input state
+  gState.buf = gState.savedInputState.buffer
+  gState.pos = gState.savedInputState.cursorPos
+  gState.prompt = gState.savedInputState.promptText
+  
+proc moveToInputAreaStart*() =
+  ## Move cursor to the start of the input area
+  if gState.outputMode == omPersistent:
+    # In persistent mode, move to the input area start row
+    stdout.write(fmt"\x1b[{gState.inputAreaStartRow};1H")
+  else:
+    # In normal mode, just go to beginning of current line
+    stdout.write("\r")
+
+proc clearInputArea*() =
+  ## Clear the input area completely
+  moveToInputAreaStart()
+  stdout.write("\x1b[0J")  # Clear from cursor to end of screen
+
+proc restoreInputArea*() =
+  ## Restore the input area with saved state
+  moveToInputAreaStart()
+  
+  # Display prompt with color
+  setTextColor(gState.promptColor, gState.promptStyle)
+  stdout.write(gState.savedInputState.promptText)
+  resetAttributes()
+  
+  # Display the saved buffer
+  stdout.write(gState.savedInputState.buffer)
+  
+  # Position cursor at saved position
+  let promptLen = calculatePromptDisplayLength()
+  let totalCharsBeforeCursor = promptLen + gState.savedInputState.cursorPos
+  let cursorLine = totalCharsBeforeCursor div gState.cols
+  let cursorCol = totalCharsBeforeCursor mod gState.cols
+  
+  # Move to correct position
+  moveToInputAreaStart()
+  if cursorLine > 0:
+    stdout.write(fmt"\x1b[{cursorLine}B")  # Move down to target line
+  stdout.write(fmt"\x1b[{cursorCol + 1}G")  # Move to target column (1-based)
+  
+  stdout.flushFile()
+
+proc enterPersistentMode*() =
+  ## Switch to persistent input area mode
+  if gState.outputMode == omPersistent:
+    return  # Already in persistent mode
+  
+  gState.outputMode = omPersistent
+  
+  # Calculate optimal input area height
+  let neededHeight = min(calculateInputAreaHeight(), gState.persistentConfig.inputAreaMaxHeight)
+  gState.inputAreaHeight = max(1, neededHeight)
+  
+  # Calculate area boundaries
+  gState.inputAreaStartRow = gState.rows - gState.inputAreaHeight + 1  
+  gState.scrollableAreaHeight = gState.rows - gState.inputAreaHeight
+  
+  # Save current state and clear screen to establish areas
+  saveInputState()
+  clearInputArea()
+  restoreInputArea()
+
+proc exitPersistentMode*() =
+  ## Return to normal single-line input mode
+  if gState.outputMode == omNormal:
+    return  # Already in normal mode
+    
+  gState.outputMode = omNormal
+  gState.inputAreaHeight = 1
+  gState.inputAreaStartRow = gState.rows
+  gState.scrollableAreaHeight = gState.rows - 1
+  
+  # Clear screen and restore normal operation
+  stdout.write("\x1b[2J\x1b[H")  # Clear screen and move to top
+  refreshLine()
+
+proc isInPersistentMode*(): bool =
+  ## Check if currently in persistent input area mode
+  return gState.outputMode == omPersistent
+
+proc setPersistentModeConfig*(config: PersistentModeConfig) =
+  ## Set configuration for persistent mode
+  gState.persistentConfig = config
+  
+  # If already in persistent mode, recalculate areas
+  if gState.outputMode == omPersistent:
+    let neededHeight = min(calculateInputAreaHeight(), config.inputAreaMaxHeight)
+    gState.inputAreaHeight = max(1, neededHeight)
+    gState.inputAreaStartRow = gState.rows - gState.inputAreaHeight + 1
+    gState.scrollableAreaHeight = gState.rows - gState.inputAreaHeight
+
+proc getPersistentModeConfig*(): PersistentModeConfig =
+  ## Get current persistent mode configuration
+  return gState.persistentConfig
+
+## Enhanced completion callback registration
+proc registerCompletionDisplayCallback*(callback: CompletionDisplayCallback) =
+  ## Register callback for displaying completions
+  gState.completionDisplayCallback = callback
+
+proc registerCompletionClearCallback*(callback: CompletionClearCallback) =
+  ## Register callback for clearing completion display
+  gState.completionClearCallback = callback
+
+## Phase 2: Output display functions for persistent mode
+
+proc getTerminalSize(): (int, int) =
+  ## Get current terminal size, with fallback
+  try:
+    let size = terminalSize()
+    return (size.w, size.h)
+  except:
+    return (80, 24)  # Fallback size
+
+proc displayContentAbove(lines: seq[string]) =
+  ## Display content lines in the scrollable area above input
+  # Move to top of scrollable area
+  stdout.write(&"\x1b[{gState.inputAreaStartRow - gState.scrollableAreaHeight}H")
+  
+  # Clear the scrollable area
+  for i in 0..<gState.scrollableAreaHeight:
+    stdout.write(&"\x1b[{gState.inputAreaStartRow - gState.scrollableAreaHeight + i}H")
+    stdout.write("\x1b[K")  # Clear line
+  
+  # Display content lines
+  for i, line in lines:
+    if i < gState.scrollableAreaHeight:
+      stdout.write(&"\x1b[{gState.inputAreaStartRow - gState.scrollableAreaHeight + i}H")
+      # Truncate line if it's too wide for terminal
+      let (termWidth, _) = getTerminalSize()
+      let displayLine = if line.len > termWidth: line[0..<termWidth-1] else: line
+      stdout.write(displayLine)
+  
+  stdout.flushFile()
+
+proc displayContentWithPaging(lines: seq[string], availableHeight: int) =
+  ## Display content with basic paging when it exceeds available space
+  let pageSize = availableHeight - 1  # Reserve one line for paging indicator
+  let totalPages = (lines.len + pageSize - 1) div pageSize  # Ceiling division
+  
+  # For now, show the last page (most recent content)
+  # This could be enhanced to support interactive paging later
+  let lastPageStart = max(0, lines.len - pageSize)
+  let lastPageLines = lines[lastPageStart..<lines.len]
+  
+  # Move to top of scrollable area
+  stdout.write(&"\x1b[{gState.inputAreaStartRow - gState.scrollableAreaHeight}H")
+  
+  # Clear the scrollable area
+  for i in 0..<gState.scrollableAreaHeight:
+    stdout.write(&"\x1b[{gState.inputAreaStartRow - gState.scrollableAreaHeight + i}H")
+    stdout.write("\x1b[K")  # Clear line
+  
+  # Display the page content
+  for i, line in lastPageLines:
+    stdout.write(&"\x1b[{gState.inputAreaStartRow - gState.scrollableAreaHeight + i}H")
+    let (termWidth, _) = getTerminalSize()
+    let displayLine = if line.len > termWidth: line[0..<termWidth-1] else: line
+    stdout.write(displayLine)
+  
+  # Show paging indicator if content was truncated
+  if lines.len > pageSize:
+    let indicatorRow = gState.inputAreaStartRow - 1
+    stdout.write(&"\x1b[{indicatorRow}H")
+    stdout.write(&"... ({lines.len - pageSize} more lines above) ...")
+  
+  stdout.flushFile()
+
+proc printAboveInput*(content: string) =
+  ## Print content above the persistent input area
+  ## This is the main function for displaying output while preserving input
+  if gState.outputMode != omPersistent:
+    # If not in persistent mode, just print normally
+    echo content
+    return
+  
+  # Save current input state
+  saveInputState()
+  
+  # Get terminal dimensions
+  let (termWidth, termHeight) = getTerminalSize()
+  let availableHeight = gState.scrollableAreaHeight
+  
+  # Split content into lines and handle overflow
+  let contentLines = content.split('\n')
+  let totalContentLines = contentLines.len
+  
+  if totalContentLines <= availableHeight:
+    # Content fits within available space
+    displayContentAbove(contentLines)
+  else:
+    # Content exceeds available space - implement basic paging
+    displayContentWithPaging(contentLines, availableHeight)
+  
+  # Restore input area
+  restoreInputArea()
+
+## Phase 3: Temporary display below input area
+
+proc printBelow*(content: string, clearAfterMs: int = 0) =
+  ## Print content temporarily below the persistent input area
+  ## If clearAfterMs > 0, automatically clear after the specified time
+  if gState.outputMode != omPersistent:
+    # If not in persistent mode, just print normally
+    echo content
+    return
+  
+  # Save current cursor position
+  let currentRow = gState.inputAreaStartRow + getCurrentLineInBuffer()
+  let (_, currentCol) = calculateWrappedPosition(gState.pos)
+  
+  # Calculate how many lines below the input area we need
+  let contentLines = content.split('\n')
+  let neededLines = contentLines.len
+  
+  # Move to position below input area
+  let displayStartRow = gState.inputAreaStartRow + gState.inputAreaHeight
+  
+  # Display content below input area
+  for i, line in contentLines:
+    let targetRow = displayStartRow + i
+    stdout.write(&"\x1b[{targetRow}H")
+    stdout.write("\x1b[K")  # Clear line first
+    
+    # Truncate line if it's too wide
+    let (termWidth, _) = getTerminalSize()
+    let displayLine = if line.len > termWidth: line[0..<termWidth-1] else: line
+    stdout.write(displayLine)
+  
+  # Restore cursor to input area
+  stdout.write(&"\x1b[{currentRow}H")
+  if currentCol > 0:
+    stdout.write(&"\x1b[{currentCol}C")
+  
+  stdout.flushFile()
+  
+  # If auto-clear is requested, set up clearing (for future enhancement)
+  # This would require async support or threading for automatic clearing
+  if clearAfterMs > 0:
+    # For now, just store the clear request - would be enhanced later
+    gState.belowContentClearMs = clearAfterMs
+
+proc clearBelow*() =
+  ## Clear content displayed below the input area
+  if gState.outputMode != omPersistent:
+    return
+  
+  # Save current cursor position  
+  let currentRow = gState.inputAreaStartRow + getCurrentLineInBuffer()
+  let (_, currentCol) = calculateWrappedPosition(gState.pos)
+  
+  # Clear lines below input area (clear a reasonable number of lines)
+  let displayStartRow = gState.inputAreaStartRow + gState.inputAreaHeight
+  let (_, termHeight) = getTerminalSize()
+  let linesToClear = min(10, termHeight - displayStartRow)  # Clear up to 10 lines or until bottom
+  
+  for i in 0..<linesToClear:
+    let targetRow = displayStartRow + i
+    stdout.write(&"\x1b[{targetRow}H")
+    stdout.write("\x1b[K")  # Clear line
+  
+  # Restore cursor to input area
+  stdout.write(&"\x1b[{currentRow}H") 
+  if currentCol > 0:
+    stdout.write(&"\x1b[{currentCol}C")
+  
+  stdout.flushFile()
