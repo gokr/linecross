@@ -1,4 +1,4 @@
-import linecross
+import ../linecross
 
 # Simple readline
 initLinecross()
