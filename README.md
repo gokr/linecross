@@ -1,245 +1,325 @@
-# Linecross
+# Linecross - Simple Cross-platform Readline Replacement
 
-A configurable Nim port of the [Crossline library](https://github.com/jcwangxp/Crossline). Linecross is a small, self-contained, cross-platform readline replacement with modular extended shortcuts.
+**Linecross.nim** is a multiline readline replacement library for Nim. In addition to regular editing capability it also has history support including search, callback support for bash style tab completion and callback for custom key handling.
 
-Alternatives to this library are readline, nimnoise etc.
+## Key Features
 
-**NOTE: This package is coded via AI and I admit it may be buggy still!**
-
-## Features
-
-- **Cross-platform support**: Windows, Linux/Unix, macOS
-- **Configurable shortcuts**: 15-65+ shortcuts via feature flags (Basic/Essential/Standard/Full)
-- **History management**: Pluggable save/load history with search capabilities
-- **Autocomplete support**: Customizable completion callbacks
-- **Color text support**: Colors for prompts and completions
-- **Cursor and screen control**: Paging and cursor positioning APIs
-- **Optional system clipboard**: Via libclip (compile-time flag)
+- **Cross-platform support** - Works on Windows, Linux, Unix, macOS
+- **History management** - Persistent command history with navigation and incremental search
+- **Tab completion** - Customizable completion system with double-tab support
+- **Cut/paste operations** - Internal and system clipboard integration
+- **Color support** - Customizable prompt coloring
+- **Multiline editing** - Intelligent cursor positioning and context-aware navigation
+- **Callback system** - Extensible with custom key handlers and completion functions
+- **Minimal dependencies** - Uses only Nim's standard library (std/terminal)
 
 ## Quick Start
 
-### Basic Usage
-
 ```nim
 import linecross
 
-# Simple readline
+# Initialize the library
 initLinecross()
-let line = readline("Prompt> ")
-echo "You entered: ", line
+
+# Simple usage
+while true:
+  let input = readline("nim> ")
+  if input == "quit":
+    break
+  echo "You typed: ", input
+
+# Save history on exit
+discard saveHistory("history.txt")
 ```
 
-### With Extended Features
+## Advanced Usage
+
+### History Management
 
 ```nim
-import linecross
-
-# Configure extended shortcuts (choose your feature level)
-initLinecross(StandardFeatures)  # 40 shortcuts including word movement, text transform
-
-proc myCompletionHook(buf: string, completions: var Completions) =
-  let commands = @["help", "exit", "list", "create", "delete", "uppercase_demo"]
-  for cmd in commands:
-    if cmd.startsWith(buf.split(' ')[^1]):
-      addCompletion(completions, cmd, "Demo: " & cmd)
-
-# Set up completion
-registerCompletionCallback(myCompletionHook)
-
-# Load history
+# Load existing history
 discard loadHistory("myapp_history.txt")
 
-echo "Try extended shortcuts:"
-echo "- Alt-B/F: Word navigation"  
-echo "- Alt-U/L/C: Text transformation"
-echo "- Ctrl-X/Y: Cut/paste operations"
+# Configure history
+initLinecross(enableHistory = true)
 
-# Main loop
-while true:
-  let line = readline("MyApp> ")
-  if line == "exit":
-    break
-  echo "Command: ", line
+# Custom history callbacks
+proc loadMyHistory(): seq[string] =
+  # Your custom history loading logic
+  result = @["previous", "commands"]
 
-# Save history
-discard saveHistory("myapp_history.txt")
+proc saveMyHistory(entries: seq[string]): bool =
+  # Your custom history saving logic
+  return true
+
+registerHistoryLoadCallback(loadMyHistory)
+registerHistorySaveCallback(saveMyHistory)
+```
+
+### Tab Completion
+
+```nim
+# Custom completion callback
+proc myCompletions(buffer: string, cursorPos: int, isSecondTab: bool): string =
+  let commands = ["help", "quit", "save", "load"]
+  let word = buffer.split(' ')[^1]
+  
+  for cmd in commands:
+    if cmd.startsWith(word):
+      return cmd[word.len..^1]  # Return remaining part
+  
+  if isSecondTab:
+    # Show available options on second tab
+    echo ""
+    echo "Available: ", commands.join(", ")
+    return ""
+  
+  return ""
+
+registerCompletionCallback(myCompletions)
+```
+
+### Color Customization
+
+```nim
+import std/terminal
+
+# Set prompt color
+setPromptColor(fgBlue, {styleBright})
+
+# Or use in readline directly
+let input = readline("$ ".fgRed & "nim> ".fgGreen)
+```
+
+### Custom Key Handlers
+
+```nim
+proc customKeyHandler(keyCode: int, buffer: string): bool =
+  case keyCode:
+  of 6:  # Ctrl+F
+    echo "\nSpecial function triggered!"
+    return true  # Key was handled
+  else:
+    return false  # Let default handler process
+
+registerCustomKeyCallback(customKeyHandler)
+```
+
+## Keyboard Shortcuts
+
+### Basic Movement
+- `Left Arrow`, `Ctrl-B` - Move back one character
+- `Right Arrow`, `Ctrl-F` - Move forward one character  
+- `Home`, `Ctrl-A` - Move to start of line
+- `End`, `Ctrl-E` - Move to end of line
+
+### Word Movement
+- `Alt-B` - Move back one word
+- `Alt-F` - Move forward one word
+- `Ctrl-Left` - Move back one word (alternative)
+- `Ctrl-Right` - Move forward one word (alternative)
+
+### Editing
+- `Backspace` - Delete character before cursor
+- `Delete`, `Ctrl-D` - Delete character under cursor (Ctrl-D: EOF if empty)
+- `Ctrl-K` - Cut from cursor to end of line
+- `Ctrl-U` - Cut from start of line to cursor
+
+### History Navigation
+- `Up Arrow`, `Ctrl-P` - Previous command in history
+- `Down Arrow`, `Ctrl-N` - Next command in history
+- `Ctrl-R` - Incremental reverse history search (if enabled)
+- `Ctrl-S` - Incremental forward history search (if enabled)
+
+*Note: In multiline mode, Up/Down intelligently switch between line navigation and history based on cursor position.*
+
+### Cut/Paste
+- `Ctrl-Y` - Paste from clipboard
+- `Ctrl-V` - Paste from clipboard (alternative)
+- `Insert` - Paste from clipboard
+
+### Control
+- `Tab` - Trigger completion (second tab shows options)
+- `Ctrl-L` - Clear screen and redisplay line
+- `Ctrl-C` - Abort current line (exit)
+- `Enter` - Accept current line
+
+## Multiline Editing
+
+Linecross supports multiline input with intelligent navigation.
+
+**Smart Up/Down behavior:**
+- **First line + Up** → Navigate to previous history
+- **Middle lines + Up/Down** → Move between lines in current input  
+- **Last line + Down** → Navigate to next history
+- **Any line + Ctrl-P/Ctrl-N** → Always navigate history
+
+## Incremental History Search
+
+When enabled with `enableHistorySearch = true`, linecross enables incremental search through command history:
+
+```nim
+# Enable during initialization
+initLinecross(enableHistory = true, enableHistorySearch = true)
+
+# Use Ctrl-R to start reverse search
+# Type characters to search - matches appear in real-time
+# Press Enter to accept, Escape to cancel
+```
+
+**Search Interface:**
+```
+(reverse-i-search)`pattern': matching_command_here
+```
+
+**Search Controls:**
+- `Ctrl-R` - Start/continue reverse search
+- `Ctrl-S` - Start/continue forward search
+- `Type characters` - Add to search pattern (real-time matching)
+- `Backspace` - Remove character from pattern
+- `Enter` - Accept current match and execute
+- `Escape` / `Ctrl-G` - Cancel search and restore original input
+
+## Configuration Options
+
+### Initialization
+```nim
+# Basic initialization
+initLinecross()
+
+# With history disabled
+initLinecross(enableHistory = false)
+
+# With incremental history search enabled
+initLinecross(enableHistory = true, enableHistorySearch = true)
+```
+
+### Word Delimiters
+```nim
+# Customize what constitutes word boundaries
+setDelimiter(" !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+```
+
+### System Clipboard
+Compile with `-d:useSystemClipboard` to enable system clipboard integration:
+```bash
+nim c -d:useSystemClipboard myapp.nim
+```
+
+## Callback Reference
+
+### Core Callbacks
+- `CustomKeyCallback` - Handle custom key combinations
+- `CompletionCallback` - Provide tab completion
+- `HistoryLoadCallback` - Custom history loading
+- `HistorySaveCallback` - Custom history saving
+
+### Callback Registration
+```nim
+registerCustomKeyCallback(proc(key: int, buf: string): bool = ...)
+registerCompletionCallback(proc(buf: string, pos: int, secondTab: bool): string = ...)
+registerHistoryLoadCallback(proc(): seq[string] = ...)
+registerHistorySaveCallback(proc(entries: seq[string]): bool = ...)
 ```
 
 ## API Reference
 
 ### Core Functions
+- `readline(prompt: string): string` - Main input function
+- `initLinecross(enableHistory: bool = true)` - Initialize library
 
-- `readline(prompt: string, initialText: string = ""): string` - Main readline function
-- `initLinecross(features: ExtendedFeatures = BasicFeatures)` - Initialize with feature configuration
-
-### History Management
-
+### History Functions  
+- `addToHistory(line: string)` - Add line to history
 - `loadHistory(filename: string): bool` - Load history from file
 - `saveHistory(filename: string): bool` - Save history to file
-- `clearHistory()` - Clear all history entries
-- `addToHistory(line: string)` - Manually add line to history
+- `clearHistory()` - Clear all history
 
-### Completion System
+### Clipboard Functions
+- `cutText(startPos, endPos: int)` - Cut text range to clipboard
+- `pasteText(pos: int): int` - Paste at position, return new position
+- `copyToClipboard(text: string)` - Copy to clipboard
 
-- `registerCompletionCallback(callback: CompletionCallback)` - Register completion function
-- `addCompletion(completions: var Completions, word, help: string, ...)` - Add completion item
-- `setHints(completions: var Completions, hints: string, ...)` - Set completion hints
+### Word Movement Functions
+- `moveToWordStart(pos: int): int` - Find start of word
+- `moveToWordEnd(pos: int): int` - Find end of word
 
-### Configuration
+### Utility Functions
+- `setPromptColor(color: ForegroundColor, style: set[Style])` - Set prompt appearance
+- `setDelimiter(delim: string)` - Configure word boundaries
 
-- `setDelimiter(delim: string)` - Set word delimiters for movement/editing
-- `setPromptColor(color: ForegroundColor, style: set[Style])` - Set prompt color and style
-- `enablePaging(enable: bool)` - Enable/disable paging
+## Examples
 
-### Extended Features Configuration
-
-- `setExtendedFeatures(features: ExtendedFeatures)` - Configure feature flags
-- `enableFeature(feature: string, enable: bool)` - Enable/disable specific features
-- `getExtendedFeatures(): ExtendedFeatures` - Get current feature configuration
-
-**Feature Sets:**
+### Simple REPL
 ```nim
-BasicFeatures      # 15 shortcuts - essential functionality only
-EssentialFeatures  # 25 shortcuts - adds word movement + cut/paste  
-StandardFeatures   # 40 shortcuts - adds text transformation + multiline
-FullFeatures       # 65+ shortcuts - all extended features enabled
+import linecross
+
+proc main() =
+  initLinecross()
+  discard loadHistory(".myrepl_history")
+  
+  echo "Simple REPL - type 'quit' to exit"
+  
+  while true:
+    let input = readline("repl> ")
+    
+    if input == "quit" or input == "":
+      break
+    
+    # Process input
+    echo "Result: ", input.toUpperAscii()
+  
+  discard saveHistory(".myrepl_history")
+
+main()
 ```
 
-### Color Support
-
+### Advanced Shell
 ```nim
-# Uses std/terminal colors and styles
-import std/terminal
+import linecross, std/[strutils, terminal]
 
-# Available colors: fgRed, fgGreen, fgBlue, fgYellow, fgMagenta, fgCyan, fgWhite, fgDefault
-# Available styles: styleBright, styleDim, styleItalic, styleUnderscore, etc.
+proc completionHandler(buffer: string, cursorPos: int, isSecondTab: bool): string =
+  let commands = ["help", "list", "create", "delete", "quit"]
+  let words = buffer.split(' ')
+  let currentWord = if words.len > 0: words[^1] else: ""
+  
+  var matches: seq[string] = @[]
+  for cmd in commands:
+    if cmd.startsWith(currentWord):
+      matches.add(cmd)
+  
+  if matches.len == 1:
+    return matches[0][currentWord.len..^1] & " "
+  elif matches.len > 1 and isSecondTab:
+    echo ""
+    echo "Available: ", matches.join(", ")
+    return ""
+  
+  return ""
 
-setPromptColor(fgCyan, {styleBright})
-addCompletion(completions, "command", "help text", fgGreen, fgYellow)
+proc main() =
+  initLinecross(enableHistory = true)
+  registerCompletionCallback(completionHandler)
+  setPromptColor(fgCyan, {styleBright})
+  
+  discard loadHistory(".shell_history")
+  
+  while true:
+    let input = readline("shell$ ")
+    
+    case input:
+    of "quit", "exit": break
+    of "help":
+      echo "Commands: help, list, create, delete, quit"
+    of "clear":
+      clearScreen()
+    else:
+      echo "Unknown command: ", input
+  
+  discard saveHistory(".shell_history")
+
+main()
 ```
-
-### Screen and Cursor Control
-
-- `getScreenSize(): (int, int)` - Get terminal size (rows, cols)
-- `getCursorPos(): (int, int)` - Get cursor position
-- `setCursorPos(row, col: int)` - Set cursor position
-- `clearScreen()` - Clear the screen
-- `hideCursor(hide: bool)` - Hide/show cursor
-
-## Keyboard Shortcuts
-
-### Universal Shortcuts (All Feature Levels)
-
-**Basic Movement:**
-- `Ctrl-B`, `Left` - Move back a character
-- `Ctrl-F`, `Right` - Move forward a character
-- `Ctrl-A`, `Home` - Move to start of line
-- `Ctrl-E`, `End` - Move to end of line
-
-**History Navigation:**
-- `Up`, `Ctrl-P` - Previous history
-- `Down`, `Ctrl-N` - Next history
-
-**Basic Editing:**
-- `Backspace` - Delete character before cursor
-- `Delete`, `Ctrl-D` - Delete character under cursor (Ctrl-D: EOF if empty)
-- `Ctrl-K` - Kill to end of line
-- `Ctrl-U` - Kill to beginning of line
-
-**Control:**
-- `Enter` - Accept line
-- `Ctrl-C`, `Ctrl-G` - Abort/exit
-- `Ctrl-L` - Clear screen
-- `Tab` - Trigger completion
-
-### Extended Shortcuts (Feature-Dependent)
-
-**Word Movement** (`wordMovement` feature):
-- `Alt-B` - Move back one word
-- `Alt-F` - Move forward one word
-
-**Text Transformation** (`textTransform` feature):
-- `Alt-U` - Uppercase current/following word
-- `Alt-L` - Lowercase current/following word
-- `Alt-C` - Capitalize current/following word
-
-**Advanced Cut/Paste** (`advancedCutPaste` feature):
-- `Ctrl-X` - Cut entire line to clipboard
-- `Ctrl-Y`, `Ctrl-V` - Paste from clipboard
-- `Ctrl-W` - Cut from cursor to last space
-- `Alt-D` - Cut word forward
-- `Alt-Backspace` - Cut word backward
-
-**Advanced Editing** (`advancedEdit` feature):
-- `Ctrl-T` - Transpose (swap) current and previous characters
-
-### Feature Level Summary
-
-| Feature Set | Shortcuts | Includes |
-|-------------|-----------|----------|
-| **BasicFeatures** | 15 | Essential movement, editing, history, completion |
-| **EssentialFeatures** | 25 | + Word movement, cut/paste operations |
-| **StandardFeatures** | 40 | + Text transformation, multiline support |
-| **FullFeatures** | 65+ | + All advanced features |
-
-## Platform Support
-
-### All Platforms (Windows, Linux, macOS, Unix)
-- Uses Nim's `terminal` module for cross-platform compatibility
-- Full keyboard shortcut support across all platforms
-- Color support using Nim's built-in color management
-- Cursor positioning and screen control via terminal module
-- Fallback ANSI escape codes when needed
-
-## Building and Installation
-
-### Prerequisites
-- Nim 2.2.4+ (may work with older)
-- Optional: `libclip` for system clipboard support
-
-### Installation
-
-```bash
-# Install via nimble (if published)
-nimble install linecross
-
-# Or clone and build locally
-git clone <repository>
-cd linecross
-nimble install
-```
-
-### Compilation
-
-```bash
-# Basic compilation (internal clipboard only)
-nim c -r example.nim                    # Basic example
-nim c -r example_extended.nim           # Extended features demo
-
-# With system clipboard support
-nim c -d:useSystemClipboard -r example_extended.nim
-
-```
-
-## Clipboard Integration
-
-### Internal Clipboard (Always Available)
-All cut/paste operations use an internal clipboard that works across all platforms and terminal types.
-
-### System Clipboard (Optional)
-For integration with system clipboard (copy from/paste to other applications):
-
-```bash
-# Compile with system clipboard support  
-nim c -d:useSystemClipboard -r your_app.nim
-```
-
-**Features with system clipboard:**
-- `Ctrl-X/Y/V` operations sync with system clipboard
-- Graceful fallback to internal clipboard if system access fails
-- Works across Windows, Linux, and macOS
-
 
 ## License
 
-MIT License - Same as the original Linecross library
+MIT License
