@@ -58,6 +58,9 @@ type
     cols: int        # Terminal width
     lastBufferSize: int  # Track buffer size for clearing
     
+    # Enter key behavior
+    moveCursorOnEnter: bool      # Whether Enter should move cursor down (default true)
+    
     # History system
     enableHistory: bool          # Feature flag for history
     enableHistorySearch: bool    # Feature flag for incremental history search (Ctrl-R/S)
@@ -86,6 +89,12 @@ type
     lastTabBuffer: string         # Buffer content when last tab was pressed
     lastTabCursorPos: int         # Cursor position when last tab was pressed
     waitingForSecondTab: bool     # True if we just processed first tab
+    
+    # Status and info areas
+    statusLines: seq[string]      # Status area content (above prompt)
+    infoLines: seq[string]        # Info area content (below prompt)
+    lastStatusLineCount: int      # Track status area size for clearing
+    lastInfoLineCount: int        # Track info area size for clearing
 
 # Global state
 var gState: LinecrossState
@@ -220,32 +229,53 @@ proc setPromptColor*(color: ForegroundColor = fgDefault, style: set[Style] = {})
   gState.promptStyle = style
 
 proc refreshLine() =
-  ## Ultra-simple refresh using save/restore cursor
-  # 1. Restore to start of our input
+  ## Enhanced refresh with status area (above) + input area + info area (below)
+  # 1. Restore to start of our total area
   stdout.write("\x1b[u")  # Restore to saved position
   
-  # 2. Clear based on OLD buffer size (before modification)
-  let oldTotalChars = gState.prompt.len + gState.lastBufferSize
-  let oldLines = if gState.cols > 0: max(1, (oldTotalChars + gState.cols - 1) div gState.cols) else: 1
+  # 2. Calculate old total lines for clearing
+  let oldInputChars = gState.prompt.len + gState.lastBufferSize
+  let oldInputLines = if gState.cols > 0: max(1, (oldInputChars + gState.cols - 1) div gState.cols) else: 1
+  let oldTotalLines = gState.lastStatusLineCount + oldInputLines + gState.lastInfoLineCount
   
   # Clear old content completely
-  for i in 0..<oldLines:
+  for i in 0..<oldTotalLines:
     stdout.write("\x1b[K")  # Clear current line
-    if i < oldLines - 1:
+    if i < oldTotalLines - 1:
       stdout.write("\n")    # Move to next line
   
-  # 3. Go back to start and redraw fresh
+  # 3. Go back to start and render all areas
   stdout.write("\x1b[u")    # Restore to start again
   
-  # Display prompt with color
+  # Phase 1: Render status area (above prompt)
+  for line in gState.statusLines:
+    stdout.write(line)
+    stdout.write("\n")
+  gState.lastStatusLineCount = gState.statusLines.len
+  
+  # Phase 2: Render input area (prompt + buffer)
   setTextColor(gState.promptColor, gState.promptStyle)
   stdout.write(gState.prompt)
   resetAttributes()
-  
   stdout.write(gState.buf)
   
-  # 4. Position cursor correctly
+  # Phase 3: Render info area (below prompt)  
+  if gState.infoLines.len > 0:
+    stdout.write("\n")
+    for i, line in gState.infoLines:
+      stdout.write(line)
+      if i < gState.infoLines.len - 1:
+        stdout.write("\n")
+  gState.lastInfoLineCount = gState.infoLines.len
+  
+  # 4. Position cursor correctly within input area
   stdout.write("\x1b[u")    # Back to start
+  
+  # Skip over status lines
+  if gState.lastStatusLineCount > 0:
+    stdout.write(&"\x1b[{gState.lastStatusLineCount}B")
+  
+  # Position cursor within input area  
   let cursorChars = gState.prompt.len + gState.pos
   let cursorLine = if gState.cols > 0: cursorChars div gState.cols else: 0
   let cursorCol = if gState.cols > 0: cursorChars mod gState.cols else: cursorChars
@@ -519,7 +549,8 @@ proc readline*(prompt: string): string =
     case key:
     # Enter - accept line
     of ord(KeyEnter), ord(KeyEnter2):
-      stdout.write("\n")
+      if gState.moveCursorOnEnter:
+        stdout.write("\n")
       let line = gState.buf
       if line.len > 0:
         addToHistory(line)
@@ -795,9 +826,64 @@ proc setDelimiter*(delim: string) =
   ## Set word delimiters for word movement operations
   gState.delimiter = delim
 
-proc initLinecross*(enableHistory: bool = true, enableHistorySearch: bool = false) =
+proc setMoveCursorOnEnter*(enabled: bool) =
+  ## Set whether Enter should move cursor down one line (true) or stay at current position (false)
+  gState.moveCursorOnEnter = enabled
+
+## Status and info area management functions
+proc setStatus*(lines: seq[string]) =
+  ## Set status area content (displayed above prompt)
+  gState.statusLines = lines
+
+proc setInfo*(lines: seq[string]) =
+  ## Set info area content (displayed below prompt)
+  gState.infoLines = lines
+
+proc clearStatus*() =
+  ## Clear status area content
+  gState.statusLines = @[]
+
+proc clearInfo*() =
+  ## Clear info area content
+  gState.infoLines = @[]
+
+proc redraw*() =
+  ## Force immediate redraw of all areas (status + input + info)
+  refreshLine()
+
+## Output functions for scrolling output
+proc writeOutput*(text: string) =
+  ## Write text to scrolling output, then redraw all areas
+  # 1. Clear all current areas (status + input + info)
+  stdout.write("\x1b[u")  # Restore to saved position
+  let oldInputChars = gState.prompt.len + gState.lastBufferSize
+  let oldInputLines = if gState.cols > 0: max(1, (oldInputChars + gState.cols - 1) div gState.cols) else: 1
+  let oldTotalLines = gState.lastStatusLineCount + oldInputLines + gState.lastInfoLineCount
+  
+  for i in 0..<oldTotalLines:
+    stdout.write("\x1b[K")  # Clear current line
+    if i < oldTotalLines - 1:
+      stdout.write("\n")    # Move to next line
+  
+  # 2. Go back to start and write the scrolling output
+  stdout.write("\x1b[u")
+  stdout.write(text)
+  stdout.write("\n")
+  
+  # 3. Save new position and redraw all areas
+  stdout.write("\x1b[s")  # Save new position
+  refreshLine()
+
+proc writeOutputLines*(lines: seq[string]) =
+  ## Write multiple lines to scrolling output, then redraw all areas
+  writeOutput(lines.join("\n"))
+
+proc initLinecross*(enableHistory: bool = true, enableHistorySearch: bool = false, moveCursorOnEnter: bool = true) =
   ## Initialize  with optional feature flags
   gState = LinecrossState()
+  
+  # Initialize Enter key behavior
+  gState.moveCursorOnEnter = moveCursorOnEnter
   
   # Initialize history system
   gState.enableHistory = enableHistory
@@ -821,5 +907,11 @@ proc initLinecross*(enableHistory: bool = true, enableHistorySearch: bool = fals
   gState.lastTabBuffer = ""
   gState.lastTabCursorPos = 0
   gState.waitingForSecondTab = false
+  
+  # Initialize status and info areas
+  gState.statusLines = @[]
+  gState.infoLines = @[]
+  gState.lastStatusLineCount = 0
+  gState.lastInfoLineCount = 0
   
   # Callbacks default to nil

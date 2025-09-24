@@ -42,7 +42,7 @@ proc fileCompletionCallback(buffer: string, cursorPos: int, isSecondTab: bool): 
         matches.add(cmd)
     
     if matches.len > 1:
-      echo "\nFile operations:"
+      var info = @["File operations:"]
       for cmd in matches:
         let helpText = case cmd:
           of "open": "Open a file for editing"
@@ -54,8 +54,9 @@ proc fileCompletionCallback(buffer: string, cursorPos: int, isSecondTab: bool): 
           of "move": "Move/rename a file"
           of "search": "Search within files"
           else: "Command: " & cmd
-        echo "  ", cmd, " - ", helpText
-      echo ""
+        info.add("  " & cmd & " - " & helpText)
+      setInfo(info)
+      redraw()
   
   return ""
 

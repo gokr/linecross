@@ -28,7 +28,7 @@ proc main() =
     if input.len == 0:
       echo "Goodbye!"
       break
-    echo "You entered: ", input
+    setInfo(@["You entered: " & input])
 
 when isMainModule:
   main()
