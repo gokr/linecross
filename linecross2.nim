@@ -12,6 +12,8 @@ import std/[terminal, strutils, strformat, os, sequtils]
 ## Constants
 const
   DefaultHistoryMaxLines* = 256
+  # Default word delimiters for word movement operations
+  DefaultDelimiter* = " !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
 
 ## Callback types for extensibility
 type
@@ -57,6 +59,9 @@ type
     maxHistoryLines: int         # Maximum history entries
     currentInput: string         # Current work-in-progress input (preserved during history navigation)
     
+    # Word movement configuration
+    delimiter: string            # Word delimiters for movement operations
+    
     # Color and styling
     promptColor: ForegroundColor # Prompt color
     promptStyle: set[Style]      # Prompt style
@@ -69,8 +74,14 @@ type
 # Global state
 var gState: LinecrossState
 
-## Helper template for control keys
+## Helper templates for control keys and special key combinations
 template ctrlKey(key: char): int = ord(key) - 0x40
+template altKey(key: int): int = key + ((ord(KeyEscape) + 1) shl 8)
+
+## Alt key constants for word movement
+const
+  AltB* = ord('b') + ((ord(KeyEscape) + 1) shl 8)     # Alt-B: Move back word
+  AltF* = ord('f') + ((ord(KeyEscape) + 1) shl 8)     # Alt-F: Move forward word
 
 proc getChar(): int =
   ## Read a single character from stdin without echo
@@ -81,13 +92,20 @@ proc getChar(): int =
     return -1
 
 proc getKey(): int =
-  ## Get a key press, handling escape sequences for arrow keys
+  ## Get a key press, handling escape sequences including Alt combinations and Ctrl variants
   let ch = getChar()
   if ch == ord(KeyEscape):
     let ch1 = getChar()
     if ch1 == -1:
       return ord(KeyEscape)
     
+    # Check for Alt+letter combinations (ESC followed by letter)
+    if ch1 >= ord('a') and ch1 <= ord('z'):
+      return ch1 + ((ord(KeyEscape) + 1) shl 8)  # Alt+letter
+    elif ch1 >= ord('A') and ch1 <= ord('Z'):
+      return (ch1 + 32) + ((ord(KeyEscape) + 1) shl 8)  # Alt+Letter -> Alt+letter
+    
+    # Handle standard escape sequences
     if ch1 == ord('['):
       let ch2 = getChar()
       case ch2:
@@ -101,6 +119,15 @@ proc getKey(): int =
         let ch3 = getChar()
         if ch3 == ord('~'):
           return ord(KeyHome)
+        elif ch3 == ord(';'):
+          # Enhanced parsing for Ctrl sequences like 1;5C (Ctrl-Right), 1;5D (Ctrl-Left)
+          let ch4 = getChar()
+          if ch4 == ord('5'):  # Ctrl modifier
+            let ch5 = getChar()
+            case ch5:
+            of ord('C'): return altKey(ord(KeyRight))  # Ctrl-Right as Alt-Right variant
+            of ord('D'): return altKey(ord(KeyLeft))   # Ctrl-Left as Alt-Left variant
+            else: discard
       of ord('3'):
         let ch3 = getChar()
         if ch3 == ord('~'):
@@ -222,6 +249,27 @@ proc deleteChar(pos: int) =
   ## Delete character at position
   if pos >= 0 and pos < gState.buf.len:
     gState.buf.delete(pos..pos)
+
+## Word movement functions
+proc moveToWordStart*(pos: int): int =
+  ## Move cursor to start of current or previous word
+  result = pos
+  # Skip whitespace
+  while result > 0 and gState.buf[result - 1] in gState.delimiter:
+    dec result
+  # Skip word characters
+  while result > 0 and gState.buf[result - 1] notin gState.delimiter:
+    dec result
+
+proc moveToWordEnd*(pos: int): int =
+  ## Move cursor to end of current or next word
+  result = pos
+  # Skip whitespace
+  while result < gState.buf.len and gState.buf[result] in gState.delimiter:
+    inc result
+  # Skip word characters
+  while result < gState.buf.len and gState.buf[result] notin gState.delimiter:
+    inc result
 
 ## History management functions
 proc addToHistory*(line: string) =
@@ -482,6 +530,28 @@ proc readline*(prompt: string): string =
       clearScreen()
       refreshLine()
     
+    # Word movement shortcuts
+    of AltB:  # Alt-B: Move back word
+      let newPos = moveToWordStart(gState.pos)
+      gState.pos = newPos
+      refreshLine()
+    
+    of AltF:  # Alt-F: Move forward word
+      let newPos = moveToWordEnd(gState.pos)
+      gState.pos = newPos
+      refreshLine()
+    
+    # Ctrl+Left/Right word movement (mapped to Alt key variants)
+    of altKey(ord(KeyLeft)):  # Ctrl-Left -> word movement
+      let newPos = moveToWordStart(gState.pos)
+      gState.pos = newPos
+      refreshLine()
+    
+    of altKey(ord(KeyRight)):  # Ctrl-Right -> word movement
+      let newPos = moveToWordEnd(gState.pos)
+      gState.pos = newPos
+      refreshLine()
+    
     # Regular character input
     else:
       if key >= 32 and key <= 126:  # Printable ASCII
@@ -506,6 +576,10 @@ proc registerHistorySaveCallback*(callback: HistorySaveCallback) =
   ## Register custom history save callback
   gState.historySaveCallback = callback
 
+proc setDelimiter*(delim: string) =
+  ## Set word delimiters for word movement operations
+  gState.delimiter = delim
+
 proc initLinecross*(enableHistory: bool = true) =
   ## Initialize linecross2 with optional feature flags
   gState = LinecrossState()
@@ -516,6 +590,9 @@ proc initLinecross*(enableHistory: bool = true) =
   gState.historyPos = 0
   gState.maxHistoryLines = DefaultHistoryMaxLines
   gState.currentInput = ""
+  
+  # Initialize word movement
+  gState.delimiter = DefaultDelimiter
   
   # Initialize colors
   gState.promptColor = fgDefault
