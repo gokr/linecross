@@ -55,6 +55,7 @@ type
     history: seq[string]         # History entries
     historyPos: int              # Current position in history
     maxHistoryLines: int         # Maximum history entries
+    currentInput: string         # Current work-in-progress input (preserved during history navigation)
     
     # Color and styling
     promptColor: ForegroundColor # Prompt color
@@ -345,12 +346,20 @@ proc readline*(prompt: string): string =
         return ""
       else:
         if gState.pos < gState.buf.len:
+          # If we were in history navigation, reset to current input mode
+          if gState.enableHistory and gState.historyPos < gState.history.len:
+            gState.historyPos = gState.history.len  # Reset to end position
+          
           deleteChar(gState.pos)
           refreshLine()
     
     # Backspace
     of ord(KeyBackspace), ord(KeyDel2):
       if gState.pos > 0:
+        # If we were in history navigation, reset to current input mode
+        if gState.enableHistory and gState.historyPos < gState.history.len:
+          gState.historyPos = gState.history.len  # Reset to end position
+        
         deleteChar(gState.pos - 1)
         dec gState.pos
         refreshLine()
@@ -358,6 +367,10 @@ proc readline*(prompt: string): string =
     # Delete
     of ord(KeyDelete):
       if gState.pos < gState.buf.len:
+        # If we were in history navigation, reset to current input mode
+        if gState.enableHistory and gState.historyPos < gState.history.len:
+          gState.historyPos = gState.history.len  # Reset to end position
+        
         deleteChar(gState.pos)
         refreshLine()
     
@@ -383,6 +396,10 @@ proc readline*(prompt: string): string =
         
         # If we're on the first line of input or single line, navigate history
         if currentLine == 0 or totalLines == 1:
+          # Save current input if we're at the end (not yet in history navigation)
+          if gState.historyPos == gState.history.len:
+            gState.currentInput = gState.buf
+          
           if gState.historyPos > 0:
             dec gState.historyPos
             gState.buf = gState.history[gState.historyPos]
@@ -424,9 +441,10 @@ proc readline*(prompt: string): string =
             gState.pos = gState.buf.len
             refreshLine()
           elif gState.historyPos == gState.history.len - 1:
-            inc gState.historyPos
-            gState.buf = ""
-            gState.pos = 0
+            # Go back to current work-in-progress input
+            inc gState.historyPos  # historyPos = history.len (past end)
+            gState.buf = gState.currentInput
+            gState.pos = gState.buf.len
             refreshLine()
         else:
           # Move cursor down one line within current input (multiline navigation)
@@ -467,6 +485,10 @@ proc readline*(prompt: string): string =
     # Regular character input
     else:
       if key >= 32 and key <= 126:  # Printable ASCII
+        # If we were in history navigation, reset to current input mode
+        if gState.enableHistory and gState.historyPos < gState.history.len:
+          gState.historyPos = gState.history.len  # Reset to end position
+        
         insertChar(char(key), gState.pos)
         inc gState.pos
         refreshLine()
@@ -493,6 +515,7 @@ proc initLinecross*(enableHistory: bool = true) =
   gState.history = @[]
   gState.historyPos = 0
   gState.maxHistoryLines = DefaultHistoryMaxLines
+  gState.currentInput = ""
   
   # Initialize colors
   gState.promptColor = fgDefault
