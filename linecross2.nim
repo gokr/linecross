@@ -9,6 +9,10 @@
 
 import std/[terminal, strutils, strformat, os, sequtils]
 
+# Optional system clipboard integration
+when defined(useSystemClipboard):
+  import libclip/clipboard
+
 ## Constants
 const
   DefaultHistoryMaxLines* = 256
@@ -20,6 +24,7 @@ type
   CustomKeyCallback* = proc(keyCode: int, buffer: string): bool {.nimcall.}
   HistoryLoadCallback* = proc(): seq[string] {.nimcall.}
   HistorySaveCallback* = proc(entries: seq[string]): bool {.nimcall.}
+  CompletionCallback* = proc(buffer: string, cursorPos: int, isSecondTab: bool): string {.nimcall.}
 
 ## Key codes for special keys
 type
@@ -41,6 +46,7 @@ type
     KeyHome = 0x3000
     KeyEnd = 0x3001
     KeyDelete = 0x3005
+    KeyInsert = 0x3006
 
 ## Enhanced state for readline with history, colors, and callbacks
 type
@@ -54,6 +60,7 @@ type
     
     # History system
     enableHistory: bool          # Feature flag for history
+    enableHistorySearch: bool    # Feature flag for incremental history search (Ctrl-R/S)
     history: seq[string]         # History entries
     historyPos: int              # Current position in history
     maxHistoryLines: int         # Maximum history entries
@@ -61,6 +68,9 @@ type
     
     # Word movement configuration
     delimiter: string            # Word delimiters for movement operations
+    
+    # Clipboard for cut/paste operations
+    clipboard: string            # Internal clipboard storage
     
     # Color and styling
     promptColor: ForegroundColor # Prompt color
@@ -70,6 +80,12 @@ type
     customKeyCallback: CustomKeyCallback
     historyLoadCallback: HistoryLoadCallback
     historySaveCallback: HistorySaveCallback
+    completionCallback: CompletionCallback
+    
+    # Completion state for double-tab detection
+    lastTabBuffer: string         # Buffer content when last tab was pressed
+    lastTabCursorPos: int         # Cursor position when last tab was pressed
+    waitingForSecondTab: bool     # True if we just processed first tab
 
 # Global state
 var gState: LinecrossState
@@ -128,6 +144,10 @@ proc getKey(): int =
             of ord('C'): return altKey(ord(KeyRight))  # Ctrl-Right as Alt-Right variant
             of ord('D'): return altKey(ord(KeyLeft))   # Ctrl-Left as Alt-Left variant
             else: discard
+      of ord('2'):
+        let ch3 = getChar()
+        if ch3 == ord('~'):
+          return ord(KeyInsert)
       of ord('3'):
         let ch3 = getChar()
         if ch3 == ord('~'):
@@ -271,6 +291,36 @@ proc moveToWordEnd*(pos: int): int =
   while result < gState.buf.len and gState.buf[result] notin gState.delimiter:
     inc result
 
+## Clipboard functions
+proc cutText*(startPos, endPos: int) =
+  ## Cut text from startPos to endPos and store in clipboard
+  if startPos >= 0 and endPos <= gState.buf.len and startPos <= endPos:
+    let cutContent = gState.buf[startPos..<endPos]
+    gState.clipboard = cutContent
+    gState.buf.delete(startPos..<endPos)
+    # Also copy to system clipboard if available
+    when defined(useSystemClipboard):
+      discard setClipboardText(cutContent)
+
+proc pasteText*(pos: int): int =
+  ## Paste clipboard content at position, return new cursor position
+  var pasteContent = ""
+  # Try system clipboard first if available
+  when defined(useSystemClipboard):
+    pasteContent = getClipboardText()
+  else:
+    pasteContent = gState.clipboard
+  if pasteContent.len > 0:
+    gState.buf.insert(pasteContent, pos)
+    return pos + pasteContent.len
+  return pos
+
+proc copyToClipboard*(text: string) =
+  ## Copy text to internal clipboard
+  gState.clipboard = text
+  when defined(useSystemClipboard):
+    discard setClipboardText(text)
+
 ## History management functions
 proc addToHistory*(line: string) =
   ## Add a line to history
@@ -344,6 +394,99 @@ proc clearHistory*() =
     gState.history = @[]
     gState.historyPos = 0
 
+proc lookupHistory*(pattern: string, maxResults: int = 40): seq[string] =
+  ## Lookup history entries matching pattern
+  var results: seq[string] = @[]
+  if pattern.len == 0:
+    return gState.history
+
+  for entry in gState.history:
+    if entry.contains(pattern):
+      results.add(entry)
+      if results.len >= maxResults:
+        break
+
+  return results
+
+## Interactive history search implementation
+proc performHistorySearch(reverse: bool) =
+  ## Interactive history search with real-time pattern matching
+  var searchPattern = ""
+  var searchResults: seq[string] = @[]
+  var currentIndex = 0
+  
+  # Save current state
+  let originalBuf = gState.buf
+  let originalPos = gState.pos
+  
+  while true:
+    # Update search results based on current pattern
+    searchResults = lookupHistory(searchPattern)
+    
+    # Display search interface
+    stdout.write("\r\x1b[K")  # Clear line
+    let direction = if reverse: "reverse" else: "forward"
+    stdout.write(&"({direction}-i-search)`{searchPattern}': ")
+    
+    if searchResults.len > 0 and currentIndex < searchResults.len:
+      stdout.write(searchResults[currentIndex])
+    else:
+      stdout.write("(no matches)")
+    
+    stdout.flushFile()
+    
+    let key = getKey()
+    
+    case key:
+    of ord(KeyEnter), ord(KeyEnter2):
+      # Accept current match
+      if searchResults.len > 0 and currentIndex < searchResults.len:
+        gState.buf = searchResults[currentIndex]
+        gState.pos = gState.buf.len
+        # Reset history position to the found entry
+        gState.historyPos = gState.history.len
+        for i, entry in gState.history:
+          if entry == searchResults[currentIndex]:
+            gState.historyPos = i
+            break
+      break
+      
+    of ctrlKey('G'), ord(KeyEscape):
+      # Cancel search - restore original
+      gState.buf = originalBuf
+      gState.pos = originalPos
+      break
+      
+    of ctrlKey('R'):
+      # Continue reverse search
+      if reverse and currentIndex < searchResults.len - 1:
+        inc currentIndex
+      elif not reverse:
+        # Switch to reverse search - we're already implementing this behavior
+        currentIndex = 0
+        
+    of ctrlKey('S'):
+      # Continue forward search
+      if not reverse and currentIndex < searchResults.len - 1:
+        inc currentIndex
+      elif reverse:
+        # Switch to forward search - we're already implementing this behavior
+        currentIndex = 0
+        
+    of ord(KeyBackspace), ord(KeyDel2):
+      # Remove character from search pattern
+      if searchPattern.len > 0:
+        searchPattern = searchPattern[0..^2]
+        currentIndex = 0
+        
+    else:
+      # Add character to search pattern
+      if key >= 32 and key <= 126:
+        searchPattern.add(char(key))
+        currentIndex = 0
+  
+  stdout.write("\n")
+
 proc readline*(prompt: string): string =
   ## Main readline function - accepts input with basic editing
   gState.prompt = prompt
@@ -403,6 +546,7 @@ proc readline*(prompt: string): string =
     
     # Backspace
     of ord(KeyBackspace), ord(KeyDel2):
+      gState.waitingForSecondTab = false  # Reset completion state
       if gState.pos > 0:
         # If we were in history navigation, reset to current input mode
         if gState.enableHistory and gState.historyPos < gState.history.len:
@@ -414,6 +558,7 @@ proc readline*(prompt: string): string =
     
     # Delete
     of ord(KeyDelete):
+      gState.waitingForSecondTab = false  # Reset completion state
       if gState.pos < gState.buf.len:
         # If we were in history navigation, reset to current input mode
         if gState.enableHistory and gState.historyPos < gState.history.len:
@@ -424,12 +569,14 @@ proc readline*(prompt: string): string =
     
     # Left arrow
     of ord(KeyLeft):
+      gState.waitingForSecondTab = false  # Reset completion state
       if gState.pos > 0:
         dec gState.pos
         refreshLine()
     
     # Right arrow
     of ord(KeyRight):
+      gState.waitingForSecondTab = false  # Reset completion state
       if gState.pos < gState.buf.len:
         inc gState.pos
         refreshLine()
@@ -530,6 +677,29 @@ proc readline*(prompt: string): string =
       clearScreen()
       refreshLine()
     
+    # Cut operations
+    of ctrlKey('K'):  # Cut from cursor to end of line
+      if gState.pos < gState.buf.len:
+        cutText(gState.pos, gState.buf.len)
+        refreshLine()
+    
+    of ctrlKey('U'):  # Cut from beginning of line to cursor
+      if gState.pos > 0:
+        cutText(0, gState.pos)
+        gState.pos = 0
+        refreshLine()
+    
+    # History search (if enabled)
+    of ctrlKey('R'):  # Ctrl-R: Reverse history search
+      if gState.enableHistorySearch:
+        performHistorySearch(reverse = true)
+        refreshLine()
+    
+    of ctrlKey('S'):  # Ctrl-S: Forward history search  
+      if gState.enableHistorySearch:
+        performHistorySearch(reverse = false)
+        refreshLine()
+    
     # Word movement shortcuts
     of AltB:  # Alt-B: Move back word
       let newPos = moveToWordStart(gState.pos)
@@ -552,9 +722,50 @@ proc readline*(prompt: string): string =
       gState.pos = newPos
       refreshLine()
     
+    # Paste operations
+    of ctrlKey('Y'):  # Paste from clipboard
+      gState.pos = pasteText(gState.pos)
+      refreshLine()
+    
+    of ctrlKey('V'):  # Alternative paste
+      gState.pos = pasteText(gState.pos)
+      refreshLine()
+    
+    of ord(KeyInsert):  # Insert key - paste from clipboard
+      gState.pos = pasteText(gState.pos)
+      refreshLine()
+    
+    # Tab completion
+    of ord(KeyTab):
+      if gState.completionCallback != nil:
+        # Determine if this is a second consecutive tab press
+        let isSecondTab = gState.waitingForSecondTab and 
+                         gState.lastTabBuffer == gState.buf and 
+                         gState.lastTabCursorPos == gState.pos
+        
+        # Call completion callback
+        let completion = gState.completionCallback(gState.buf, gState.pos, isSecondTab)
+        
+        # If callback returned text to insert, do it
+        if completion.len > 0:
+          for ch in completion:
+            insertChar(ch, gState.pos)
+            inc gState.pos
+          refreshLine()
+        
+        if not isSecondTab:
+          # First tab - store state for potential second tab
+          gState.lastTabBuffer = gState.buf
+          gState.lastTabCursorPos = gState.pos
+          gState.waitingForSecondTab = true
+        else:
+          # Second tab processed - reset state
+          gState.waitingForSecondTab = false
+    
     # Regular character input
     else:
       if key >= 32 and key <= 126:  # Printable ASCII
+        gState.waitingForSecondTab = false  # Reset completion state
         # If we were in history navigation, reset to current input mode
         if gState.enableHistory and gState.historyPos < gState.history.len:
           gState.historyPos = gState.history.len  # Reset to end position
@@ -576,16 +787,21 @@ proc registerHistorySaveCallback*(callback: HistorySaveCallback) =
   ## Register custom history save callback
   gState.historySaveCallback = callback
 
+proc registerCompletionCallback*(callback: CompletionCallback) =
+  ## Register completion callback for Tab key completion
+  gState.completionCallback = callback
+
 proc setDelimiter*(delim: string) =
   ## Set word delimiters for word movement operations
   gState.delimiter = delim
 
-proc initLinecross*(enableHistory: bool = true) =
+proc initLinecross*(enableHistory: bool = true, enableHistorySearch: bool = false) =
   ## Initialize linecross2 with optional feature flags
   gState = LinecrossState()
   
   # Initialize history system
   gState.enableHistory = enableHistory
+  gState.enableHistorySearch = enableHistorySearch
   gState.history = @[]
   gState.historyPos = 0
   gState.maxHistoryLines = DefaultHistoryMaxLines
@@ -594,8 +810,16 @@ proc initLinecross*(enableHistory: bool = true) =
   # Initialize word movement
   gState.delimiter = DefaultDelimiter
   
+  # Initialize clipboard
+  gState.clipboard = ""
+  
   # Initialize colors
   gState.promptColor = fgDefault
   gState.promptStyle = {}
+  
+  # Initialize completion state
+  gState.lastTabBuffer = ""
+  gState.lastTabCursorPos = 0
+  gState.waitingForSecondTab = false
   
   # Callbacks default to nil

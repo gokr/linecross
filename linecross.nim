@@ -1,7 +1,6 @@
 ## Linecross - A cross-platform readline replacement for Nim
 ## 
-## This is a Nim port of the Linecross library, providing a small, self-contained,
-## zero-config, cross-platform readline replacement.
+## This is a Nim port of the Crossline library.
 ##
 ## Features:
 ## - Cross-platform support (Windows, Linux, Unix, macOS)
@@ -233,9 +232,6 @@ const
 ## Main linecross state
 type
   LinecrossState* = object
-    # Terminal state
-    isWindows*: bool
-
     # Input buffer and cursor
     buf*: string
     pos*: int  # cursor position in buffer
@@ -345,38 +341,23 @@ proc getChar*(): int =
   except:
     return -1
 
-proc getScreenSize*(): (int, int) =
-  ## Get terminal screen size (rows, cols)
-  try:
-    let (w, h) = terminalSize()
-    # Ensure we have sensible minimum values
-    let rows = if h <= 0: 25 else: h
-    let cols = if w <= 0: 80 else: w
-    return (rows, cols)
-  except:
-    return (25, 80)  # fallback
-
 proc getCursorPos*(): (int, int) =
-  ## Get current cursor position (row, col) - 0-based
-  try:
-    let (x, y) = terminal.getCursorPos()
-    return (y, x)  # Convert from (x, y) to (row, col)
-  except:
-    return (0, 0)
+  ## Get current cursor position (col, row) - 0-based
+  terminal.getCursorPos()
 
-proc setCursorPos*(row, col: int) =
+proc setCursorPos*(col, row: int) =
   ## Set cursor position (0-based)
   try:
-    terminal.setCursorPos(col, row)  # terminal module uses (x, y) order
+    terminal.setCursorPos(col, row)
   except:
     # Fallback using ANSI codes
     stdout.write(&"\x1b[{row + 1};{col + 1}H")
     stdout.flushFile()
 
-proc moveCursor*(rowOffset, colOffset: int) =
+proc moveCursor*(colOffset, rowOffset: int) =
   ## Move cursor by offset
-  let (row, col) = getCursorPos()
-  setCursorPos(row + rowOffset, col + colOffset)
+  let (col, row) = getCursorPos()
+  setCursorPos(col + colOffset, row + rowOffset)
 
 proc clearScreen*() =
   ## Clear the entire screen
@@ -681,82 +662,61 @@ proc deleteChar*(pos: int) =
 
 proc moveToWordStart*(pos: int): int =
   ## Move cursor to start of current or previous word
-  var newPos = pos
-  
+  result = pos
   # Skip whitespace
-  while newPos > 0 and gState.buf[newPos - 1] in gState.delimiter:
-    dec newPos
-  
+  while result > 0 and gState.buf[result - 1] in gState.delimiter:
+    dec result
   # Skip word characters
-  while newPos > 0 and gState.buf[newPos - 1] notin gState.delimiter:
-    dec newPos
-  
-  return newPos
+  while result > 0 and gState.buf[result - 1] notin gState.delimiter:
+    dec result
 
 proc moveToWordEnd*(pos: int): int =
   ## Move cursor to end of current or next word
-  var newPos = pos
-  
+  result = pos
   # Skip whitespace
-  while newPos < gState.buf.len and gState.buf[newPos] in gState.delimiter:
-    inc newPos
-  
-  # Skip word characters  
-  while newPos < gState.buf.len and gState.buf[newPos] notin gState.delimiter:
-    inc newPos
-  
-  return newPos
+  while result < gState.buf.len and gState.buf[result] in gState.delimiter:
+    inc result
+  # Skip word characters
+  while result < gState.buf.len and gState.buf[result] notin gState.delimiter:
+    inc result
 
 ## Text transformation functions
 proc uppercaseWord*(startPos: int): int =
   ## Uppercase current or following word, return new cursor position
-  var pos = startPos
-  
+  result = startPos
   # Skip whitespace
-  while pos < gState.buf.len and gState.buf[pos] in gState.delimiter:
-    inc pos
-  
+  while result < gState.buf.len and gState.buf[result] in gState.delimiter:
+    inc result
   # Uppercase word characters
-  while pos < gState.buf.len and gState.buf[pos] notin gState.delimiter:
-    gState.buf[pos] = gState.buf[pos].toUpperAscii
-    inc pos
-  
-  return pos
+  while result < gState.buf.len and gState.buf[result] notin gState.delimiter:
+    gState.buf[result] = gState.buf[result].toUpperAscii
+    inc result
 
 proc lowercaseWord*(startPos: int): int =
   ## Lowercase current or following word, return new cursor position
-  var pos = startPos
-  
+  result = startPos
   # Skip whitespace
-  while pos < gState.buf.len and gState.buf[pos] in gState.delimiter:
-    inc pos
-  
+  while result < gState.buf.len and gState.buf[result] in gState.delimiter:
+    inc result
   # Lowercase word characters
-  while pos < gState.buf.len and gState.buf[pos] notin gState.delimiter:
-    gState.buf[pos] = gState.buf[pos].toLowerAscii
-    inc pos
-  
-  return pos
+  while result < gState.buf.len and gState.buf[result] notin gState.delimiter:
+    gState.buf[result] = gState.buf[result].toLowerAscii
+    inc result
 
 proc capitalizeWord*(startPos: int): int =
   ## Capitalize current or following word, return new cursor position
-  var pos = startPos
-  
+  result = startPos
   # Skip whitespace
-  while pos < gState.buf.len and gState.buf[pos] in gState.delimiter:
-    inc pos
-  
+  while result < gState.buf.len and gState.buf[result] in gState.delimiter:
+    inc result
   # Capitalize first character
-  if pos < gState.buf.len and gState.buf[pos] notin gState.delimiter:
-    gState.buf[pos] = gState.buf[pos].toUpperAscii
-    inc pos
-    
+  if result < gState.buf.len and gState.buf[result] notin gState.delimiter:
+    gState.buf[result] = gState.buf[result].toUpperAscii
+    inc result
     # Lowercase remaining characters
-    while pos < gState.buf.len and gState.buf[pos] notin gState.delimiter:
-      gState.buf[pos] = gState.buf[pos].toLowerAscii
-      inc pos
-  
-  return pos
+    while result < gState.buf.len and gState.buf[result] notin gState.delimiter:
+      gState.buf[result] = gState.buf[result].toLowerAscii
+      inc result
 
 ## Cut/paste helper functions with optional system clipboard support
 proc cutText*(startPos, endPos: int) =
@@ -765,7 +725,6 @@ proc cutText*(startPos, endPos: int) =
     let cutContent = gState.buf[startPos..<endPos]
     gState.clipBoard = cutContent
     gState.buf.delete(startPos..<endPos)
-    
     # Also copy to system clipboard if available
     when defined(useSystemClipboard):
       discard setClipboardText(cutContent)
@@ -773,13 +732,11 @@ proc cutText*(startPos, endPos: int) =
 proc pasteText*(pos: int): int =
   ## Paste clipboard content at position, return new cursor position
   var pasteContent = ""
-  
   # Try system clipboard first if available
   when defined(useSystemClipboard):
     pasteContent = getClipboardText()
   else:
     pasteContent = gState.clipBoard
-  
   if pasteContent.len > 0:
     gState.buf.insert(pasteContent, pos)
     return pos + pasteContent.len
@@ -794,62 +751,128 @@ proc copyToClipboard*(text: string) =
 ## Display functions
 
 ## Multiline text calculation helpers
-proc calculatePromptDisplayLength(): int =
+proc promptLength(): int =
   ## Calculate the display length of the prompt (excluding color codes)
   return gState.prompt.len
 
 proc calculateWrappedPosition(bufPos: int): (int, int) =
   ## Calculate which screen line and column a buffer position corresponds to
   ## Returns (lineNum, colNum) where lineNum=0 is the first line
-  let promptLen = calculatePromptDisplayLength()
-  let totalCharsBeforeCursor = promptLen + bufPos
-  let lineNum = totalCharsBeforeCursor div gState.cols
-  let colNum = totalCharsBeforeCursor mod gState.cols
-  return (lineNum, colNum)
+  ## Properly handles actual newline characters in the buffer
+  # Ensure we have valid column count to prevent division by zero
+  if gState.cols <= 0:
+    let (_, cols) = terminalSize()
+    gState.cols = cols
+    
+  let promptLen = promptLength()
+  
+  # Split buffer by actual newlines to handle multiline text correctly
+  let textUpToCursor = gState.buf[0..<min(bufPos, gState.buf.len)]
+  let lines = textUpToCursor.split('\n')
+  
+  if lines.len == 1:
+    # Single line case - use wrapping calculation
+    let totalCharsBeforeCursor = promptLen + bufPos
+    let lineNum = totalCharsBeforeCursor div gState.cols
+    let colNum = totalCharsBeforeCursor mod gState.cols
+    return (lineNum, colNum)
+  else:
+    # Multi-line case - calculate based on actual lines
+    var currentLine = 0
+    var currentCol = promptLen
+    
+    # Process all complete lines
+    for i in 0..<(lines.len - 1):
+      let lineLen = lines[i].len
+      if i == 0:
+        # First line includes prompt
+        currentCol += lineLen
+      else:
+        currentCol = lineLen
+      
+      # Account for line wrapping within this logical line
+      currentLine += (currentCol + gState.cols - 1) div gState.cols
+      currentCol = 0  # Start fresh for next line after newline
+    
+    # Handle the last (incomplete) line
+    let lastLineLen = lines[^1].len
+    if lines.len == 1:
+      currentCol = promptLen + lastLineLen
+    else:
+      currentCol = lastLineLen
+    
+    # Add wrapped lines for the last line
+    let wrappedLines = currentCol div gState.cols
+    currentLine += wrappedLines
+    currentCol = currentCol mod gState.cols
+    
+    return (currentLine, currentCol)
 
 proc calculateTotalLines(): int =
   ## Calculate total screen lines needed for current buffer
-  let promptLen = calculatePromptDisplayLength()
+  # Ensure we have valid column count to prevent division by zero
+  if gState.cols <= 0:
+    let (_, cols) = terminalSize()
+    gState.cols = cols
+    
+  let promptLen = promptLength()
   let totalChars = promptLen + gState.buf.len
   return max(1, (totalChars + gState.cols - 1) div gState.cols)
-
-proc getPhysicalCursorPos(): (int, int) =
-  ## Get current physical screen position of cursor
-  return calculateWrappedPosition(gState.pos)
 
 proc getCurrentLineInBuffer(): int =
   ## Get which wrapped line the cursor is currently on (0-based)
   let (lineNum, _) = calculateWrappedPosition(gState.pos)
   return lineNum
 
-proc isAtStartOfLine(): bool =
-  ## Check if cursor is at the start of a wrapped line
-  let (_, colNum) = calculateWrappedPosition(gState.pos)
-  let promptLen = calculatePromptDisplayLength()
-  return colNum == 0 or (getCurrentLineInBuffer() == 0 and gState.pos == 0)
-
-proc isAtEndOfLine(): bool =
-  ## Check if cursor is at the end of a wrapped line
-  let (lineNum, colNum) = calculateWrappedPosition(gState.pos)
-  let totalLines = calculateTotalLines()
-  # At end if we're on the last line and at the actual end of buffer
-  return lineNum == totalLines - 1 and gState.pos == gState.buf.len
-
-proc moveToLine(targetLine: int): int =
-  ## Move cursor to start of specified wrapped line, return new buffer position
-  if targetLine < 0:
-    return 0
-  
-  let promptLen = calculatePromptDisplayLength()
-  let targetPos = max(0, targetLine * gState.cols - promptLen)
-  return min(targetPos, gState.buf.len)
-
 proc findBufferPosForLineCol(lineNum: int, colNum: int): int =
   ## Find buffer position for given screen line and column
-  let promptLen = calculatePromptDisplayLength()
+  let promptLen = promptLength()
   let totalPos = lineNum * gState.cols + colNum
   let bufPos = totalPos - promptLen
   return max(0, min(bufPos, gState.buf.len))
+
+proc moveLines(lineOffset: int) =
+  ## Move cursor up or down by lineOffset lines
+  if lineOffset > 0:
+    # Move down
+    stdout.write(&"\x1b[{lineOffset}B")
+  elif lineOffset < 0:
+    # Move up
+    stdout.write(&"\x1b[{-lineOffset}A")
+
+proc moveCols(colOffset: int) =
+  ## Move cursor right or left by colOffset columns
+  if colOffset > 0:
+    # Move right
+    stdout.write(&"\x1b[{colOffset}C")
+  elif colOffset < 0:
+    # Move left
+    stdout.write(&"\x1b[{-colOffset}D")
+
+proc moveCursorTo(newPos: int) =
+  ## Move cursor directly from current position to new position without redrawing buffer
+  ## This provides smooth cursor movement within multiline text
+  let oldPos = gState.pos
+  let (oldLine, oldCol) = calculateWrappedPosition(oldPos)
+  let (newLine, newCol) = calculateWrappedPosition(newPos)
+  
+  # Calculate relative movement needed
+  let lineDiff = newLine - oldLine
+  let colDiff = newCol - oldCol
+  
+  moveLines(lineDiff)
+  
+  if lineDiff != 0:
+    # When changing lines, go to start of line then move to target column
+    stdout.write("\r")
+    if newCol > 0:
+      stdout.write(&"\x1b[{newCol}C")
+  else:
+    moveCols(colDiff)
+  
+  # Update buffer position
+  gState.pos = newPos
+  stdout.flushFile()
 
 proc refreshPersistentInputArea() =
   ## Refresh display in persistent input area mode
@@ -873,7 +896,7 @@ proc refreshPersistentInputArea() =
   stdout.write(gState.buf)
   
   # Calculate cursor position within the input area
-  let promptLen = calculatePromptDisplayLength()
+  let promptLen = promptLength()
   let totalCharsBeforeCursor = promptLen + gState.pos
   let cursorLine = totalCharsBeforeCursor div gState.cols
   let cursorCol = totalCharsBeforeCursor mod gState.cols
@@ -888,7 +911,12 @@ proc refreshPersistentInputArea() =
 
 proc refreshNormalInputLine() =
   ## Refresh display in normal mode - proper multiline handling without repetition
-  let promptLen = calculatePromptDisplayLength()
+  # Ensure we have valid column count to prevent division by zero
+  if gState.cols <= 0:
+    let (_, cols) = terminalSize()
+    gState.cols = cols
+  
+  let promptLen = promptLength()
   let totalCharsBeforeCursor = promptLen + gState.pos
   let totalChars = promptLen + gState.buf.len
   let cursorLine = totalCharsBeforeCursor div gState.cols
@@ -896,7 +924,8 @@ proc refreshNormalInputLine() =
   let totalLines = max(1, (totalChars + gState.cols - 1) div gState.cols)
   
   # First, move to the start of the first line if we're on a wrapped line
-  if cursorLine > 0:
+  if cursorLine > 0 or cursorCol == gState.cols - 1:
+    stderr.write(&"Move to start of first line. Total lines: {totalLines}, Cursor line: {cursorLine}, Col: {cursorCol}, gState.cols: {gState.cols}\n")
     stdout.write(&"\x1b[{cursorLine}A")  # Move up to first line
   
   # Go to start of line
@@ -919,7 +948,8 @@ proc refreshNormalInputLine() =
   let targetCol = cursorCol
   
   # Use absolute positioning instead of relative character movement
-  if totalLines > 1:
+  if cursorLine > 0 or cursorCol == gState.cols - 1:
+    stderr.write(&"Absolute positioning. Total lines: {totalLines}, Cursor line: {cursorLine}, Col: {cursorCol}, Target line: {targetLine}, Col: {targetCol}\n")
     # Multi-line case: go to first line, then move to target position
     stdout.write("\r")  # Go to start of current (last) line
     
@@ -936,6 +966,7 @@ proc refreshNormalInputLine() =
       stdout.write(&"\x1b[{targetCol}C")
   else:
     # Single line case: simple positioning
+    stderr.write(&"Simple positioning. Total lines: {totalLines}, Cursor line: {cursorLine}, Col: {cursorCol}\n")
     stdout.write("\r")
     if cursorCol > 0:
       stdout.write(&"\x1b[{cursorCol}C")
@@ -950,32 +981,6 @@ proc refreshLine*() =
     refreshNormalInputLine()
 
 ## Completion system
-proc longestCommonPrefix(words: seq[string]): string =
-  ## Calculate the longest common prefix among a sequence of words
-  if words.len == 0:
-    return ""
-  if words.len == 1:
-    return words[0]
-  
-  var commonPrefix = ""
-  var minLen = words[0].len
-  for word in words[1..^1]:
-    if word.len < minLen:
-      minLen = word.len
-  
-  for i in 0..<minLen:
-    let ch = words[0][i]
-    var allMatch = true
-    for word in words[1..^1]:
-      if word[i] != ch:
-        allMatch = false
-        break
-    if allMatch:
-      commonPrefix.add(ch)
-    else:
-      break
-  
-  return commonPrefix
 
 proc clearDisplayBelowPrompt() =
   ## Clear any displayed lines below the prompt
@@ -1314,9 +1319,23 @@ proc readline*(prompt: string, initialText: string = ""): string =
     of ord(KeyBackspace), ord(KeyDel2):  # KeyBackspace (8) and Ctrl+H are the same
       clearCompletionDisplay()
       if gState.pos > 0:
+        let deletedChar = gState.buf[gState.pos - 1]
+        deleteChar(gState.pos - 1)
         dec gState.pos
-        deleteChar(gState.pos)
+        
+        # Refresh the display first
         refreshLine()
+        
+        # For newline deletion, ensure cursor is positioned correctly
+        if deletedChar == '\n':
+          # Force correct cursor positioning after newline deletion
+          let (targetLine, targetCol) = calculateWrappedPosition(gState.pos)
+          stdout.write("\r")
+          if targetLine > 0:
+            stdout.write(&"\x1b[{targetLine}B")
+          if targetCol > 0:
+            stdout.write(&"\x1b[{targetCol}C")
+          stdout.flushFile()
     
     # Delete
     of ord(KeyDelete):
@@ -1329,24 +1348,20 @@ proc readline*(prompt: string, initialText: string = ""): string =
     of ord(KeyLeft), ctrlKey('B'):
       clearCompletionDisplay()
       if gState.pos > 0:
-        dec gState.pos
-        refreshLine()
+        moveCursorTo(gState.pos - 1)
     
     of ord(KeyRight), ctrlKey('F'):
       clearCompletionDisplay()
       if gState.pos < gState.buf.len:
-        inc gState.pos
-        refreshLine()
+        moveCursorTo(gState.pos + 1)
     
     of ord(KeyHome), ctrlKey('A'):
       clearCompletionDisplay()
-      gState.pos = 0
-      refreshLine()
+      moveCursorTo(0)
     
     of ord(KeyEnd), ctrlKey('E'):
       clearCompletionDisplay()
-      gState.pos = gState.buf.len
-      refreshLine()
+      moveCursorTo(gState.buf.len)
     
     # Word movement (fix existing Ctrl-W behavior)
     of ctrlKey('W'):  # Cut to left till whitespace 
@@ -1378,12 +1393,11 @@ proc readline*(prompt: string, initialText: string = ""): string =
           gState.pos = gState.buf.len
           refreshLine()
       else:
-        # Move cursor up one line within current input
+        # Move cursor up one line within current input - direct cursor movement
         let (currentLineNum, currentCol) = calculateWrappedPosition(gState.pos)
         if currentLineNum > 0:
           let newPos = findBufferPosForLineCol(currentLineNum - 1, currentCol)
-          gState.pos = newPos
-          refreshLine()
+          moveCursorTo(newPos)
     
     of ord(KeyDown), ctrlKey('N'):
       let currentLine = getCurrentLineInBuffer()
@@ -1405,11 +1419,10 @@ proc readline*(prompt: string, initialText: string = ""): string =
           gState.pos = 0
           refreshLine()
       else:
-        # Move cursor down one line within current input
+        # Move cursor down one line within current input - direct cursor movement
         if currentLineNum < totalLines - 1:
           let newPos = findBufferPosForLineCol(currentLineNum + 1, currentCol)
-          gState.pos = newPos
-          refreshLine()
+          moveCursorTo(newPos)
     
     # Tab completion
     of ord(KeyTab):  # Tab key (9) and Ctrl+I are the same
@@ -1433,13 +1446,11 @@ proc readline*(prompt: string, initialText: string = ""): string =
     # Extended shortcuts - Word Movement
     of AltB:  # Alt-B: Move back word
       if gState.features.wordMovement:
-        gState.pos = moveToWordStart(gState.pos)
-        refreshLine()
+        moveCursorTo(moveToWordStart(gState.pos))
     
     of AltF:  # Alt-F: Move forward word
       if gState.features.wordMovement:
-        gState.pos = moveToWordEnd(gState.pos)
-        refreshLine()
+        moveCursorTo(moveToWordEnd(gState.pos))
     
     # Extended shortcuts - Text Transformation  
     of AltU:  # Alt-U: Uppercase word
@@ -1490,13 +1501,11 @@ proc readline*(prompt: string, initialText: string = ""): string =
     # Key variants - Alternative movement keys (when keyVariants enabled)
     of altKey(ord(KeyLeft)):  # Ctrl-Left, Alt-Left variants -> word movement
       if gState.features.keyVariants and gState.features.wordMovement:
-        gState.pos = moveToWordStart(gState.pos)
-        refreshLine()
+        moveCursorTo(moveToWordStart(gState.pos))
     
     of altKey(ord(KeyRight)):  # Ctrl-Right, Alt-Right variants -> word movement  
       if gState.features.keyVariants and gState.features.wordMovement:
-        gState.pos = moveToWordEnd(gState.pos)
-        refreshLine()
+        moveCursorTo(moveToWordEnd(gState.pos))
     
     of altKey(ord(KeyUp)):  # Ctrl-Up, Alt-Up variants -> multi-line up
       if gState.features.keyVariants and gState.features.multilineNav:
@@ -1504,8 +1513,7 @@ proc readline*(prompt: string, initialText: string = ""): string =
         let (currentLineNum, currentCol) = calculateWrappedPosition(gState.pos)
         if currentLineNum > 0:
           let newPos = findBufferPosForLineCol(currentLineNum - 1, currentCol)
-          gState.pos = newPos
-          refreshLine()
+          moveCursorTo(newPos)
     
     of altKey(ord(KeyDown)):  # Ctrl-Down, Alt-Down variants -> multi-line down
       if gState.features.keyVariants and gState.features.multilineNav:
@@ -1514,8 +1522,7 @@ proc readline*(prompt: string, initialText: string = ""): string =
         let totalLines = calculateTotalLines()
         if currentLineNum < totalLines - 1:
           let newPos = findBufferPosForLineCol(currentLineNum + 1, currentCol)
-          gState.pos = newPos
-          refreshLine()
+          moveCursorTo(newPos)
     
     # Extended shortcuts - Advanced Editing
     of ctrlKey('T'):  # Ctrl-T: Transpose characters
@@ -1840,7 +1847,6 @@ proc checkPaging*(lineCount: int = 1): bool =
 proc initLinecross*(features: ExtendedFeatures = BasicFeatures) =
   ## Initialize linecross with optional extended features
   gState = LinecrossState()
-  gState.isWindows = defined(windows)
   gState.delimiter = DefaultDelimiter
   gState.history = History(maxLines: DefaultHistoryMaxLines)
   gState.promptColor = fgDefault
@@ -1854,7 +1860,7 @@ proc initLinecross*(features: ExtendedFeatures = BasicFeatures) =
   gState.bashCompletionPrefix = ""
     
   # Get initial screen size
-  let (rows, cols) = getScreenSize()
+  let (rows, cols) = terminalSize()
   gState.rows = rows
   gState.cols = cols
   
@@ -1876,7 +1882,7 @@ proc calculateInputAreaHeight*(): int =
   if gState.buf.len == 0:
     return 1  # Always need at least one line for the prompt
   
-  let promptLen = calculatePromptDisplayLength()  
+  let promptLen = promptLength()  
   let totalChars = promptLen + gState.buf.len
   return max(1, (totalChars + gState.cols - 1) div gState.cols)
 
@@ -1922,7 +1928,7 @@ proc restoreInputArea*() =
   stdout.write(gState.savedInputState.buffer)
   
   # Position cursor at saved position
-  let promptLen = calculatePromptDisplayLength()
+  let promptLen = promptLength()
   let totalCharsBeforeCursor = promptLen + gState.savedInputState.cursorPos
   let cursorLine = totalCharsBeforeCursor div gState.cols
   let cursorCol = totalCharsBeforeCursor mod gState.cols
@@ -2031,7 +2037,6 @@ proc displayContentAbove(lines: seq[string]) =
 proc displayContentWithPaging(lines: seq[string], availableHeight: int) =
   ## Display content with basic paging when it exceeds available space
   let pageSize = availableHeight - 1  # Reserve one line for paging indicator
-  let totalPages = (lines.len + pageSize - 1) div pageSize  # Ceiling division
   
   # For now, show the last page (most recent content)
   # This could be enhanced to support interactive paging later
@@ -2073,7 +2078,6 @@ proc printAboveInput*(content: string) =
   saveInputState()
   
   # Get terminal dimensions
-  let (termWidth, termHeight) = getTerminalSize()
   let availableHeight = gState.scrollableAreaHeight
   
   # Split content into lines and handle overflow
@@ -2106,7 +2110,6 @@ proc printBelow*(content: string, clearAfterMs: int = 0) =
   
   # Calculate how many lines below the input area we need
   let contentLines = content.split('\n')
-  let neededLines = contentLines.len
   
   # Move to position below input area
   let displayStartRow = gState.inputAreaStartRow + gState.inputAreaHeight
