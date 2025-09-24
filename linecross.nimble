@@ -1,8 +1,8 @@
 # Package
 
-version       = "1.0.2"
+version       = "1.1"
 author        = "Göran Krampe"
-description   = "Linecross - cross-platform readline replacement with configurable extended shortcuts"
+description   = "Linecross - cross-platform multiline readline replacement with history and completions"
 license       = "MIT"
 srcDir        = "."
 
@@ -14,16 +14,10 @@ requires "libclip" # For system clipboard integration (compile with -d:useSystem
 
 # Tasks
 
-task test, "Run the test suite":
-  exec "nim c -r example.nim"
-  exec "nim c -r example2.nim"
-  exec "nim c -r example_sql.nim"
-  exec "nim c -r example_extended.nim"
+task test, "Run all tests":
+  exec "nimble install -d"
+  exec "testament --colors:on pattern 'tests/test_*.nim'"
 
 task docs, "Generate documentation":
   exec "nim doc --project --index:on --git.url:https://github.com/gokr/linecross linecross.nim"
 
-task clean, "Clean generated files":
-  exec "rm -f example example2 example_sql example_extended"
-  exec "rm -f *.exe"
-  exec "rm -rf htmldocs/"
