@@ -1,115 +1,207 @@
-# Enhanced Linecross Examples
+# Linecross Examples
 
-This directory contains demonstration programs for the enhanced linecross persistent input area functionality. These examples show how the new features solve cursor positioning issues and provide a foundation for better terminal interfaces.
+This directory contains focused examples demonstrating the features and capabilities of the linecross readline replacement library.
+
+## Overview
+
+Linecross is a cross-platform readline replacement library for Nim that provides:
+- Basic readline functionality with editing and history
+- Tab completion with customizable callbacks  
+- Colored prompts and output
+- Custom key bindings
+- History management with custom storage backends
 
 ## Examples
 
-### 1. `simple_demo.nim` - Basic Usage
-A minimal example showing the core persistent input area functionality.
+### 1. `basic.nim` - Basic Usage
 
-**Features demonstrated:**
-- Entering/exiting persistent mode
-- Displaying content above input with `printAboveInput()`
-- Temporary content below input with `printBelow()`
-- Basic paging for long content
+**Purpose**: Demonstrates the most fundamental linecross functionality.
 
-**Run with:**
+**Features shown**:
+- Simple readline input/output
+- Basic text editing (arrow keys, backspace, delete)
+- Enter to submit, Ctrl+C to exit
+- Minimal setup required
+
+**Run with**:
 ```bash
-cd linecross/examples
-nim c -r simple_demo.nim
+nim c -r basic.nim
 ```
 
-### 2. `comparison_demo.nim` - Before vs After
-Shows the difference between normal mode (old behavior) and enhanced mode.
+**Best for**: Getting started, understanding the core API, simple applications.
 
-**Features demonstrated:**
-- Side-by-side comparison of old vs new behavior
-- How tables disrupted cursor positioning before
-- How persistent input area solves the problem
-- Clear benefits of the enhancement
+---
 
-**Run with:**
+### 2. `extended.nim` - Extended Features  
+
+**Purpose**: Shows extended features and history management.
+
+**Features shown**:
+- History navigation (Up/Down arrows)
+- Tab completion with custom callbacks
+- History persistence (save/load)
+- Extended feature documentation
+- Standard readline shortcuts
+
+**Run with**:
 ```bash
-nim c -r comparison_demo.nim
+nim c -r extended.nim
 ```
 
-### 3. `demo_persistent_mode.nim` - Comprehensive Demo
-Full demonstration of all persistent input area features.
+**Best for**: Applications needing history, completion, and standard readline behavior.
 
-**Features demonstrated:**
-- All four demo modes:
-  1. Basic persistent mode with table display
-  2. Automatic paging functionality
-  3. Temporary display below input
-  4. Interactive session (Niffler simulation)
-- Complete feature set usage
-- Real-world usage scenarios
+---
 
-**Run with:**
+### 3. `completion.nim` - Tab Completion
+
+**Purpose**: Comprehensive demonstration of tab completion capabilities.
+
+**Features shown**:
+- Single-tab completion for unique matches
+- Double-tab to show all possibilities
+- Context-aware completions (SQL-like example)
+- Multiple completion modes (file operations vs SQL syntax)
+- Help text and descriptions
+
+**Run with**:
 ```bash
-nim c -r demo_persistent_mode.nim
+nim c -r completion.nim
 ```
 
-## The Problem These Examples Solve
+**Best for**: Applications with complex command structures, IDEs, shells, REPLs.
 
-### Original Issue
-When using Nancy tables in Niffler CLI (like for `/conv` command output), the cursor would get stuck in the bottom-right corner after displaying the table instead of returning to the prompt. This made the interface unusable.
+---
 
-### Enhanced Solution
-The persistent input area provides:
+### 4. `advanced.nim` - Advanced Features
 
-1. **Fixed Input Area**: Input prompt stays at the bottom of the terminal
-2. **Output Above**: All command output appears above the input area
-3. **Cursor Stability**: Cursor positioning is never disrupted
-4. **Automatic Paging**: Long content is paginated automatically
-5. **Temporary Display**: Completions can be shown below input temporarily
+**Purpose**: Showcases the most advanced linecross capabilities.
 
-## Key Functions Demonstrated
+**Features shown**:
+- Custom history callbacks (custom storage backends)
+- Colored prompts and output
+- Custom key bindings (Ctrl+T example)
+- History search and metadata
+- Advanced completion with colored output
+- Integration with external systems
+
+**Run with**:
+```bash
+nim c -r advanced.nim
+```
+
+**Best for**: Complex applications, custom integrations, specialized requirements.
+
+## Feature Comparison
+
+| Feature | Basic | Extended | Completion | Advanced |
+|---------|-------|----------|------------|----------|
+| Basic readline | ✅ | ✅ | ✅ | ✅ |
+| History navigation | ❌ | ✅ | ✅ | ✅ |
+| Tab completion | ❌ | ✅ | ✅ | ✅ |
+| Context-aware completion | ❌ | ❌ | ✅ | ✅ |
+| Colored output | ❌ | ❌ | ❌ | ✅ |
+| Custom key bindings | ❌ | ❌ | ❌ | ✅ |
+| Custom history storage | ❌ | ❌ | ❌ | ✅ |
+| History search | ❌ | ❌ | ❌ | ✅ |
+
+## Usage Patterns
+
+### Integrating into Your Application
+
+1. **Start with `basic.nim`** to understand the core API
+2. **Review `extended.nim`** for history and completion needs
+3. **Study `completion.nim`** for complex completion requirements
+4. **Examine `advanced.nim`** for specialized features
+
+### Common Integration Steps
+
+```nim
+# 1. Import and initialize
+import linecross
+initLinecross(enableHistory = true)
+
+# 2. Optional: Set up completion
+proc myCompletion(buffer: string, cursorPos: int, isSecondTab: bool): string =
+  # Your completion logic here
+  return ""
+registerCompletionCallback(myCompletion)
+
+# 3. Optional: Load/save history
+discard loadHistory("myapp.history")
+
+# 4. Main input loop
+while true:
+  let input = readline("myapp> ")
+  if input == "quit":
+    break
+  # Process input...
+
+# 5. Optional: Save history on exit
+discard saveHistory("myapp.history")
+```
+
+## API Reference
 
 ### Core Functions
-- `enterPersistentMode()` - Enable persistent input area
-- `exitPersistentMode()` - Return to normal behavior
-- `printAboveInput(content)` - Display content above input
-- `printBelow(content)` - Show temporary content below input
-- `clearBelow()` - Clear temporary content
 
-### Configuration
-- `setPersistentModeConfig()` - Configure input area behavior
-- `isInPersistentMode()` - Check current mode
+- `initLinecross(enableHistory = true)` - Initialize the library
+- `readline(prompt: string): string` - Get user input
+- `addToHistory(line: string)` - Add entry to history
+- `loadHistory(filename: string): bool` - Load history from file
+- `saveHistory(filename: string): bool` - Save history to file
+- `clearHistory()` - Clear all history
 
-## Running the Examples
+### Customization
 
-All examples require the enhanced linecross to be compiled first:
+- `setPromptColor(color, style)` - Set prompt color/style
+- `registerCompletionCallback(callback)` - Set completion function
+- `registerCustomKeyCallback(callback)` - Add custom key bindings
+- `registerHistoryLoadCallback(callback)` - Custom history loading
+- `registerHistorySaveCallback(callback)` - Custom history saving
 
-```bash
-# From the linecross directory
-nim c linecross.nim
+### Completion Callback Signature
 
-# Then run any example
-cd examples
-nim c -r simple_demo.nim
-nim c -r comparison_demo.nim
-nim c -r demo_persistent_mode.nim
+```nim
+proc myCompletion(buffer: string, cursorPos: int, isSecondTab: bool): string
 ```
 
-## Integration with Niffler
+- `buffer`: Current input buffer
+- `cursorPos`: Current cursor position  
+- `isSecondTab`: `true` if this is the second tab press
+- Return: Text to insert, or empty string to show completions
 
-These examples show exactly how Niffler can integrate the enhanced linecross:
+## Building and Running
 
-1. **Enter persistent mode** when starting interactive session
-2. **Use `printAboveInput()`** for command output (including Nancy tables)
-3. **Use `printBelow()`** for completions and temporary help
-4. **Exit persistent mode** when shutting down
+All examples are designed to compile and run independently:
 
-This will solve the cursor positioning issue while providing a much more polished user experience similar to modern IDEs and advanced terminal applications.
+```bash
+# Test compilation
+nim check basic.nim
+nim check extended.nim  
+nim check completion.nim
+nim check advanced.nim
+
+# Run examples
+nim c -r basic.nim
+nim c -r extended.nim
+nim c -r completion.nim
+nim c -r advanced.nim
+```
 
 ## Terminal Compatibility
 
-The enhanced linecross uses standard ANSI escape sequences and should work on:
-- Most Linux terminals (tested)
+The examples work on:
+- Linux terminals (tested)
 - macOS Terminal
-- Windows Terminal
+- Windows Terminal  
 - Most terminal emulators
 - SSH sessions
 
-The implementation includes fallbacks for terminals with limited capabilities.
+## Next Steps
+
+1. Choose the example that best matches your needs
+2. Copy and adapt the relevant code patterns
+3. Customize completion and history for your application
+4. Test on your target platforms
+
+For more information, see the main project documentation and the `linecross.nim` source file.
